@@ -1,0 +1,37 @@
+# Environment and secrets
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Sensitive financial data
+statements/
+data/intermediate/
+data/categories.json
+data/cards.json
+output/
+
+# Document files (may contain personal data)
+*.pdf
+*.csv
+*.xlsx
+*.xls
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

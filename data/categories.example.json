@@ -1,0 +1,41 @@
+{
+  "Health": [
+    "pharmacy", "cvs", "walgreens", "doctor", "medical", "dental",
+    "hospital", "clinic", "gym", "fitness"
+  ],
+  "Rent": [
+    "rent", "lease", "apartment", "housing", "mortgage"
+  ],
+  "Restaurant": [
+    "uber eats", "doordash", "grubhub", "starbucks", "chipotle",
+    "subway", "restaurant", "cafe", "coffee", "pizza"
+  ],
+  "Transport": [
+    "uber", "lyft", "taxi", "metro", "transit", "parking", "gas station"
+  ],
+  "Groceries": [
+    "trader joe", "whole foods", "safeway", "costco", "walmart",
+    "grocery", "market", "instacart"
+  ],
+  "Work": [
+    "office", "supplies", "coworking", "business"
+  ],
+  "Entertainment": [
+    "netflix", "hulu", "spotify", "movie", "cinema", "concert", "ticket"
+  ],
+  "Household": [
+    "home depot", "ikea", "amazon", "utility", "internet", "phone"
+  ],
+  "Gift": [
+    "gift", "present", "donation", "flowers"
+  ],
+  "Intoxicants": [
+    "liquor", "wine", "beer", "bar"
+  ],
+  "Vacations": [
+    "airline", "flight", "hotel", "airbnb", "travel", "rental car"
+  ],
+  "Dates": [
+    "flowers", "romantic", "spa", "salon"
+  ]
+}
