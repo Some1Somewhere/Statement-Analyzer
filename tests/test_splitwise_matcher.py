@@ -8,6 +8,7 @@ from src.splitwise_matcher import (
     generate_transaction_id,
     load_matches,
     save_matches,
+    rank_candidates,
 )
 
 
@@ -74,3 +75,57 @@ class TestMatchPersistence:
         loaded = load_matches(match_file)
         assert len(loaded) == 1
         assert loaded[0]["splitwise_id"] == 2
+
+
+class TestRankCandidates:
+    """Test ranking of card transaction candidates for a Splitwise expense."""
+
+    def test_exact_amount_and_close_date_ranked_first(
+        self, sample_card_transactions
+    ):
+        """A card txn with exact amount match and same day should rank highest."""
+        sw_expense = {
+            "id": 1001,
+            "cost": "82.30",
+            "date": "2026-01-17T18:00:00Z",
+        }
+        ranked = rank_candidates(sw_expense, sample_card_transactions)
+        # WHOLE FOODS MARKET: same date, same amount
+        assert ranked[0]["txn"]["description"] == "WHOLE FOODS MARKET"
+
+    def test_returns_top_n_candidates(self, sample_card_transactions):
+        sw_expense = {
+            "id": 1001,
+            "cost": "82.30",
+            "date": "2026-01-17T18:00:00Z",
+        }
+        ranked = rank_candidates(sw_expense, sample_card_transactions, top_n=2)
+        assert len(ranked) <= 2
+
+    def test_score_decreases_with_date_distance(self):
+        """Candidates farther in date should score lower."""
+        txns = [
+            {
+                "date": "2026-01-15",
+                "description": "A",
+                "amount": 50.00,
+                "source": "x",
+                "statement_file": "s.pdf",
+            },
+            {
+                "date": "2026-01-17",
+                "description": "B",
+                "amount": 50.00,
+                "source": "x",
+                "statement_file": "s.pdf",
+            },
+        ]
+        sw = {"id": 1, "cost": "50.00", "date": "2026-01-17T12:00:00Z"}
+        ranked = rank_candidates(sw, txns)
+        # B is same day, should rank higher than A (2 days away)
+        assert ranked[0]["txn"]["description"] == "B"
+
+    def test_empty_transactions_returns_empty(self):
+        sw = {"id": 1, "cost": "50.00", "date": "2026-01-17T12:00:00Z"}
+        ranked = rank_candidates(sw, [])
+        assert ranked == []
