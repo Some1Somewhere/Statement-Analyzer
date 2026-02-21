@@ -24,6 +24,13 @@ OUTPUT_DIR = BASE_DIR / "output"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 CARDS_FILE = DATA_DIR / "cards.json"
 
+SPLITWISE_API_KEY = os.getenv("SPLITWISE_API_KEY")
+SPLITWISE_BASE_URL = "https://secure.splitwise.com/api/v3.0"
+SPLITWISE_MATCHES_FILE = DATA_DIR / "splitwise_matches.json"
+
+# Categories where shared expenses are common (for "missing from Splitwise" detection)
+SHAREABLE_CATEGORIES = ["Restaurant", "Entertainment", "Vacations", "Dates", "Groceries", "Household"]
+
 
 def _load_card_types() -> dict:
     """Load card types from JSON config file."""

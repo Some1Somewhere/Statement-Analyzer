@@ -18,6 +18,7 @@ statements/
 data/intermediate/
 data/categories.json
 data/cards.json
+data/splitwise_matches.json
 output/
 
 # Document files (may contain personal data)
