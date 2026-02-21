@@ -153,3 +153,125 @@ def apply_matches(
         result.append(txn_copy)
 
     return result
+
+
+def run_interactive_matching(
+    splitwise_shared: list[dict],
+    card_transactions: list[dict],
+    match_file: Optional[Path] = None,
+) -> list[dict]:
+    """
+    Run an interactive CLI session to match Splitwise expenses to card transactions.
+
+    For each unmatched Splitwise expense, shows top 3 card transaction candidates
+    and prompts the user to pick one.
+
+    Args:
+        splitwise_shared: "i_paid_shared" expenses from Splitwise.
+        card_transactions: All card transactions.
+        match_file: Path to the match persistence file.
+
+    Returns:
+        Updated list of all matches (existing + new).
+    """
+    matches = load_matches(match_file)
+
+    # Build sets of already-matched IDs
+    matched_sw_ids = {m["splitwise_id"] for m in matches}
+    matched_card_ids = {m["card_transaction_id"] for m in matches}
+
+    # Filter to unmatched Splitwise expenses
+    unmatched_sw = [e for e in splitwise_shared if e["id"] not in matched_sw_ids]
+
+    if not unmatched_sw:
+        print("No unmatched Splitwise expenses to process.")
+        return matches
+
+    # Filter out already-matched card transactions
+    available_cards = [
+        t for t in card_transactions
+        if generate_transaction_id(t) not in matched_card_ids
+    ]
+
+    print(f"\n{len(unmatched_sw)} Splitwise expense(s) to match.\n")
+
+    for i, sw_exp in enumerate(unmatched_sw, 1):
+        cost = sw_exp.get("cost", "?")
+        desc = sw_exp.get("description", "?")
+        date = sw_exp.get("date", "?")[:10]
+
+        print(f"--- [{i}/{len(unmatched_sw)}] Splitwise: {desc} | ${cost} | {date} ---")
+
+        candidates = rank_candidates(sw_exp, available_cards)
+
+        if not candidates:
+            print("  No candidates found.")
+            choice = input("  [s]kip / [n]ot on card / [q]uit: ").strip().lower()
+            if choice == "q":
+                break
+            if choice == "n":
+                matches.append(
+                    {
+                        "splitwise_id": sw_exp["id"],
+                        "card_transaction_id": "__not_on_card__",
+                        "matched_at": datetime.now().isoformat(),
+                    }
+                )
+            continue
+
+        for j, cand in enumerate(candidates, 1):
+            t = cand["txn"]
+            score = cand["score"]
+            print(
+                f"  {j}. {t['description']} | ${t['amount']:.2f} | {t['date']} "
+                f"| {t.get('source_display', t.get('source', '?'))} "
+                f"[score: {score:.0f}]"
+            )
+
+        print(f"  0. None of these")
+        print(f"  n. Not on card (Venmo/cash)")
+        print(f"  q. Quit matching")
+
+        choice = input("  Pick: ").strip().lower()
+
+        if choice == "q":
+            break
+        elif choice == "n":
+            # Record as "not on card" so we don't ask again
+            matches.append(
+                {
+                    "splitwise_id": sw_exp["id"],
+                    "card_transaction_id": "__not_on_card__",
+                    "matched_at": datetime.now().isoformat(),
+                }
+            )
+        elif choice == "0":
+            continue  # Skip, will ask again next time
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(candidates):
+                    matched_txn = candidates[idx]["txn"]
+                    card_id = generate_transaction_id(matched_txn)
+                    matches.append(
+                        {
+                            "splitwise_id": sw_exp["id"],
+                            "card_transaction_id": card_id,
+                            "matched_at": datetime.now().isoformat(),
+                        }
+                    )
+                    # Remove from available pool
+                    available_cards = [
+                        t for t in available_cards
+                        if generate_transaction_id(t) != card_id
+                    ]
+                    print(f"  Matched!")
+                else:
+                    print("  Invalid choice, skipping.")
+            except ValueError:
+                print("  Invalid choice, skipping.")
+
+    save_matches(matches, match_file)
+    new_count = len(matches) - len(matched_sw_ids)
+    print(f"\nDone. {new_count} new match(es) saved. Total: {len(matches)}.")
+    return matches
