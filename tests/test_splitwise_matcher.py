@@ -9,6 +9,7 @@ from src.splitwise_matcher import (
     load_matches,
     save_matches,
     rank_candidates,
+    apply_matches,
 )
 
 
@@ -129,3 +130,55 @@ class TestRankCandidates:
         sw = {"id": 1, "cost": "50.00", "date": "2026-01-17T12:00:00Z"}
         ranked = rank_candidates(sw, [])
         assert ranked == []
+
+
+class TestApplyMatches:
+    """Test applying Splitwise match data to card transactions."""
+
+    def test_matched_transaction_gets_adjusted_amounts(self):
+        """A matched card txn should have splitwise share data attached."""
+        transactions = [
+            {
+                "date": "2026-01-17",
+                "description": "WHOLE FOODS MARKET",
+                "amount": 82.30,
+                "is_credit": False,
+                "source": "amex_bcp",
+                "statement_file": "stmt.pdf",
+            }
+        ]
+        matches = [
+            {
+                "splitwise_id": 1001,
+                "card_transaction_id": "amex_bcp|stmt.pdf|2026-01-17|WHOLE FOODS MARKET|82.3",
+            }
+        ]
+        sw_expenses = [
+            {
+                "id": 1001,
+                "cost": "82.30",
+                "users": [
+                    {"user_id": 1, "paid_share": "82.30", "owed_share": "41.15"},
+                    {"user_id": 2, "paid_share": "0.00", "owed_share": "41.15"},
+                ],
+            }
+        ]
+        result = apply_matches(transactions, matches, sw_expenses, my_user_id=1)
+        assert result[0]["splitwise_matched"] is True
+        assert result[0]["splitwise_owed"] == 41.15
+        assert result[0]["splitwise_others_owe"] == pytest.approx(41.15)
+
+    def test_unmatched_transaction_unchanged(self):
+        """An unmatched card txn should pass through with no splitwise fields."""
+        transactions = [
+            {
+                "date": "2026-01-16",
+                "description": "UBER TRIP",
+                "amount": 18.75,
+                "is_credit": False,
+                "source": "chase_sapphire",
+                "statement_file": "stmt.pdf",
+            }
+        ]
+        result = apply_matches(transactions, [], [], my_user_id=1)
+        assert result[0].get("splitwise_matched") is not True

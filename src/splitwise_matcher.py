@@ -97,3 +97,59 @@ def rank_candidates(
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_n]
+
+
+def apply_matches(
+    transactions: list[dict],
+    matches: list[dict],
+    splitwise_expenses: list[dict],
+    my_user_id: int,
+) -> list[dict]:
+    """
+    Apply Splitwise match data to card transactions.
+
+    For each matched card transaction, attaches:
+    - splitwise_matched: True
+    - splitwise_owed: my owed_share
+    - splitwise_others_owe: paid_share - owed_share
+
+    Args:
+        transactions: Card transactions (will not be mutated).
+        matches: List of match dicts with splitwise_id and card_transaction_id.
+        splitwise_expenses: The "i_paid_shared" expenses from Splitwise cache.
+        my_user_id: Splitwise user ID.
+
+    Returns:
+        New list of transactions with match data attached where applicable.
+    """
+    # Build lookup: card_transaction_id -> splitwise_id
+    card_to_sw = {}
+    for match in matches:
+        card_to_sw[match["card_transaction_id"]] = match["splitwise_id"]
+
+    # Build lookup: splitwise_id -> expense
+    sw_by_id = {exp["id"]: exp for exp in splitwise_expenses}
+
+    result = []
+    for txn in transactions:
+        txn_id = generate_transaction_id(txn)
+        txn_copy = {**txn}
+
+        if txn_id in card_to_sw:
+            sw_id = card_to_sw[txn_id]
+            sw_exp = sw_by_id.get(sw_id)
+
+            if sw_exp:
+                # Find my share
+                for user_entry in sw_exp.get("users", []):
+                    if user_entry.get("user_id") == my_user_id:
+                        paid = float(user_entry.get("paid_share", "0"))
+                        owed = float(user_entry.get("owed_share", "0"))
+                        txn_copy["splitwise_matched"] = True
+                        txn_copy["splitwise_owed"] = owed
+                        txn_copy["splitwise_others_owe"] = paid - owed
+                        break
+
+        result.append(txn_copy)
+
+    return result
