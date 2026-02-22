@@ -137,6 +137,10 @@ class SplitwiseClient:
             if expense.get("deleted_at"):
                 continue
 
+            # Skip non-USD expenses
+            if expense.get("currency_code", "USD") != "USD":
+                continue
+
             # Find the current user's share
             my_share = None
             for user_entry in expense.get("users", []):

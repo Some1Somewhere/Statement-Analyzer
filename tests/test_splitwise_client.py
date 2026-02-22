@@ -66,6 +66,40 @@ class TestClassifyExpenses:
         assert len(result["i_paid_shared"]) == 0
 
 
+    def test_non_usd_expenses_filtered(self):
+        """Non-USD expenses should be skipped during classification."""
+        expenses = [
+            {
+                "id": 3001,
+                "cost": "229.0",
+                "description": "Spotify premium",
+                "date": "2026-02-12T18:12:21Z",
+                "payment": False,
+                "currency_code": "INR",
+                "users": [
+                    {"user_id": 2, "paid_share": "229.0", "owed_share": "114.5"},
+                    {"user_id": 1, "paid_share": "0.0", "owed_share": "114.5"},
+                ],
+            },
+            {
+                "id": 3002,
+                "cost": "50.00",
+                "description": "Lunch",
+                "date": "2026-02-12T12:00:00Z",
+                "payment": False,
+                "currency_code": "USD",
+                "users": [
+                    {"user_id": 2, "paid_share": "50.00", "owed_share": "25.00"},
+                    {"user_id": 1, "paid_share": "0.0", "owed_share": "25.00"},
+                ],
+            },
+        ]
+        result = SplitwiseClient.classify_expenses(expenses, my_user_id=1)
+        # Only the USD expense should appear
+        assert len(result["others_paid"]) == 1
+        assert result["others_paid"][0]["id"] == 3002
+
+
 class TestConvertToTransactions:
     """Test converting Splitwise expenses to transaction format."""
 
