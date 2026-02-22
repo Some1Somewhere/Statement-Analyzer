@@ -65,16 +65,23 @@ class Formatter:
         # Get payment type from source
         source = txn.get("source", "unknown")
         payment_type = CARD_TYPES.get(source, source)
+        # Splitwise transactions won't be in CARD_TYPES, use source_display
+        if source == "splitwise":
+            payment_type = txn.get("source_display", "Splitwise")
 
         # Get amount
         amount = txn.get("amount", 0)
 
-        description = txn.get("description", "").lower()
-        
-        # Work expenses (Subway) - reimbursed, so "Other people Owe me" = 0
-        # For other transactions, leave empty for manual entry
-        is_work_expense = "subway" in description
-        other_people_owe = 0 if is_work_expense else ""
+        # Determine "Amount I owe" and "Other people Owe me"
+        if txn.get("splitwise_matched"):
+            # Matched to Splitwise: use the split amounts
+            amount_i_owe = txn.get("splitwise_owed", amount)
+            other_people_owe = txn.get("splitwise_others_owe", 0)
+        else:
+            description = txn.get("description", "").lower()
+            is_work_expense = "subway" in description
+            other_people_owe = 0 if is_work_expense else ""
+            amount_i_owe = amount
 
         return {
             "Date": date_str,
@@ -84,8 +91,8 @@ class Formatter:
             "Payment Type": payment_type,
             "Amount Charged": amount,
             "Other people Owe me": other_people_owe,
-            "Amount I owe": amount,
-            "Notes": "",  # Empty by default
+            "Amount I owe": amount_i_owe,
+            "Notes": "",
         }
 
     def _extract_month(self, date_str: str) -> str:
