@@ -297,6 +297,100 @@ def cmd_match_splitwise(args):
     return 0
 
 
+def cmd_manual_match(args):
+    """Manually match a Splitwise expense to a card transaction by row numbers."""
+    import csv as csv_mod
+    from .splitwise_client import SplitwiseClient
+    from .splitwise_matcher import (
+        generate_transaction_id, load_matches, save_matches,
+    )
+    from datetime import datetime as dt
+
+    unmatched_path = OUTPUT_DIR / "unmatched_splitwise.csv"
+    expenses_path = OUTPUT_DIR / "expenses.csv"
+
+    if not unmatched_path.exists():
+        print(f"Not found: {unmatched_path}")
+        print("Run 'export' first to generate the CSVs.")
+        return 1
+    if not expenses_path.exists():
+        print(f"Not found: {expenses_path}")
+        print("Run 'export' first to generate the CSVs.")
+        return 1
+
+    # Read unmatched CSV rows
+    with open(unmatched_path) as f:
+        unmatched_rows = list(csv_mod.DictReader(f))
+
+    # Read expenses CSV rows
+    with open(expenses_path) as f:
+        expenses_rows = list(csv_mod.DictReader(f))
+
+    sw_row_num = args.splitwise_row
+    exp_row_num = args.expenses_row
+
+    if sw_row_num < 1 or sw_row_num > len(unmatched_rows):
+        print(f"Invalid unmatched row {sw_row_num}. File has {len(unmatched_rows)} rows.")
+        return 1
+    if exp_row_num < 1 or exp_row_num > len(expenses_rows):
+        print(f"Invalid expenses row {exp_row_num}. File has {len(expenses_rows)} rows.")
+        return 1
+
+    sw_row = unmatched_rows[sw_row_num - 1]
+    exp_row = expenses_rows[exp_row_num - 1]
+
+    sw_id = int(sw_row["Splitwise ID"])
+    sw_desc = sw_row["Description"]
+    sw_date = sw_row["Date"]
+    exp_desc = exp_row["Item"]
+    exp_date = exp_row["Date"]
+    exp_amount = exp_row["Amount Charged"]
+
+    # Find the card transaction that matches this expenses.csv row
+    # Load card transactions in the same order as export
+    extractor = PDFExtractor()
+    card_transactions = extractor.get_all_transactions()
+    # Filter credits, sort by date — same as formatter
+    card_transactions = [t for t in card_transactions if not t.get("is_credit")]
+    card_transactions.sort(key=lambda t: t.get("date", ""))
+
+    # Also include Splitwise "others_paid" in same order as export
+    cached = SplitwiseClient.load_cached()
+    if cached:
+        others_paid = cached.get("others_paid", [])
+        if others_paid:
+            sw_txns = SplitwiseClient.to_transactions(others_paid, cached.get("user_id"))
+            sw_txns = [t for t in sw_txns if not t.get("is_credit")]
+            card_transactions.extend(sw_txns)
+            card_transactions.sort(key=lambda t: t.get("date", ""))
+
+    if exp_row_num > len(card_transactions):
+        print(f"Row {exp_row_num} exceeds available transactions ({len(card_transactions)}).")
+        return 1
+
+    matched_txn = card_transactions[exp_row_num - 1]
+    card_id = generate_transaction_id(matched_txn)
+
+    # Confirm with user
+    print(f"Splitwise (row {sw_row_num}): {sw_desc} | ${sw_row['You Paid']} | {sw_date}")
+    print(f"Card (row {exp_row_num}):      {exp_desc} | ${exp_amount} | {exp_date}")
+    confirm = input("Match these? (y/n): ").strip().lower()
+    if confirm != "y":
+        print("Cancelled.")
+        return 0
+
+    # Save the match
+    matches = load_matches()
+    matches.append({
+        "splitwise_id": sw_id,
+        "card_transaction_id": card_id,
+        "matched_at": dt.now().isoformat(),
+    })
+    save_matches(matches)
+    print(f"Matched! Run 'export' to update CSVs.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Statement Analyzer - Process credit card statements"
@@ -360,6 +454,19 @@ def main():
         "match-splitwise", help="Interactively match card transactions to Splitwise"
     )
 
+    # Manual match command
+    mm_parser = subparsers.add_parser(
+        "manual-match", help="Manually match a Splitwise expense to a card transaction"
+    )
+    mm_parser.add_argument(
+        "splitwise_row", type=int,
+        help="Row number from unmatched_splitwise.csv (1-indexed)"
+    )
+    mm_parser.add_argument(
+        "expenses_row", type=int,
+        help="Row number from expenses.csv (1-indexed)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "extract":
@@ -378,6 +485,8 @@ def main():
         return cmd_fetch_splitwise(args)
     elif args.command == "match-splitwise":
         return cmd_match_splitwise(args)
+    elif args.command == "manual-match":
+        return cmd_manual_match(args)
     else:
         parser.print_help()
         return 0
