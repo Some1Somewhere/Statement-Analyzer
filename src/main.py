@@ -75,7 +75,7 @@ def cmd_categorize(args):
 def cmd_export(args):
     """Export categorized transactions to CSV/Excel."""
     from .splitwise_client import SplitwiseClient
-    from .splitwise_matcher import load_matches, apply_matches
+    from .splitwise_matcher import load_matches, apply_matches, export_unmatched_splitwise
 
     extractor = PDFExtractor()
     categorizer = Categorizer()
@@ -103,6 +103,10 @@ def cmd_export(args):
             )
             real_matches = [m for m in matches if m["card_transaction_id"] != "__not_on_card__"]
             print(f"Applied {len(real_matches)} Splitwise match(es)")
+
+        # Export unmatched Splitwise CSV
+        if i_paid_shared:
+            export_unmatched_splitwise(i_paid_shared, matches or [], my_user_id)
 
     if not transactions:
         print("No transactions found. Run 'extract' command first.")

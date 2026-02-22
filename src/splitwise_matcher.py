@@ -5,7 +5,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .config import SPLITWISE_MATCHES_FILE
+import csv
+
+from .config import SPLITWISE_MATCHES_FILE, OUTPUT_DIR
 
 
 def generate_transaction_id(txn: dict) -> str:
@@ -300,3 +302,62 @@ def run_interactive_matching(
     new_count = len(matches) - len(matched_sw_ids)
     print(f"\nDone. {new_count} new match(es) saved. Total: {len(matches)}.")
     return matches
+
+
+def export_unmatched_splitwise(
+    i_paid_shared: list[dict],
+    matches: list[dict],
+    my_user_id: int,
+    output_path: Optional[Path] = None,
+) -> Path:
+    """
+    Export unmatched Splitwise i_paid_shared expenses to a CSV.
+
+    These are expenses you added to Splitwise (you paid) but haven't
+    been matched to a card transaction yet.
+
+    Args:
+        i_paid_shared: The "i_paid_shared" expenses from Splitwise cache.
+        matches: Current match list.
+        my_user_id: Splitwise user ID.
+        output_path: Output CSV path. Defaults to output/unmatched_splitwise.csv.
+
+    Returns:
+        Path to the written CSV.
+    """
+    path = output_path or OUTPUT_DIR / "unmatched_splitwise.csv"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    matched_sw_ids = {m["splitwise_id"] for m in matches}
+    unmatched = [e for e in i_paid_shared if e["id"] not in matched_sw_ids]
+
+    rows = []
+    for e in sorted(unmatched, key=lambda x: x.get("date", "")):
+        my_entry = next(
+            (u for u in e.get("users", []) if u.get("user_id") == my_user_id),
+            None,
+        )
+        paid = float(my_entry["paid_share"]) if my_entry else 0
+        owed = float(my_entry["owed_share"]) if my_entry else 0
+
+        date_str = e.get("date", "")[:10]
+        rows.append({
+            "Date": date_str,
+            "Description": e.get("description", ""),
+            "Total Cost": float(e.get("cost", 0)),
+            "You Paid": paid,
+            "Your Share": owed,
+            "Others Owe You": round(paid - owed, 2),
+            "Splitwise ID": e["id"],
+        })
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "Date", "Description", "Total Cost", "You Paid",
+            "Your Share", "Others Owe You", "Splitwise ID",
+        ])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Wrote {len(rows)} unmatched Splitwise expenses to: {path}")
+    return path
