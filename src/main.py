@@ -185,6 +185,7 @@ def cmd_run(args):
             run_interactive_matching(
                 splitwise_shared=cached["i_paid_shared"],
                 card_transactions=card_transactions,
+                my_user_id=cached.get("user_id"),
             )
 
     # Step 4: Load, merge, categorize
@@ -287,6 +288,7 @@ def cmd_match_splitwise(args):
     run_interactive_matching(
         splitwise_shared=cached.get("i_paid_shared", []),
         card_transactions=card_transactions,
+        my_user_id=cached.get("user_id"),
     )
     return 0
 

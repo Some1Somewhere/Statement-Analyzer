@@ -141,6 +141,10 @@ class SplitwiseClient:
             if expense.get("currency_code", "USD") != "USD":
                 continue
 
+            # Skip debt consolidation ("Settle all balances") — internal Splitwise bookkeeping
+            if expense.get("creation_method") == "debt_consolidation":
+                continue
+
             # Find the current user's share
             my_share = None
             for user_entry in expense.get("users", []):

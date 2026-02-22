@@ -45,24 +45,37 @@ def save_matches(matches: list[dict], match_file: Optional[Path] = None):
 def rank_candidates(
     splitwise_expense: dict,
     card_transactions: list[dict],
-    top_n: int = 3,
+    top_n: int = 5,
+    my_user_id: int = None,
 ) -> list[dict]:
     """
     Rank card transactions as candidates for matching a Splitwise expense.
 
     Scoring:
-    - Date proximity: max 50 points, loses 10 per day of distance
+    - Date proximity: max 50 points, loses 5 per day (10-day window)
     - Amount similarity: max 50 points, loses proportionally to % difference
+      Compares against paid_share (what you actually paid) rather than cost
+      (total bill), since your card shows what you paid.
 
     Args:
-        splitwise_expense: A Splitwise expense dict with "cost" and "date".
+        splitwise_expense: A Splitwise expense dict with "cost", "date", "users".
         card_transactions: List of card transaction dicts.
         top_n: Number of top candidates to return.
+        my_user_id: Splitwise user ID to look up paid_share. Falls back to cost.
 
     Returns:
         List of {"txn": card_txn, "score": float} sorted by score descending.
     """
-    sw_cost = float(splitwise_expense.get("cost", "0"))
+    # Use paid_share if available (what appears on the card), fall back to cost
+    match_amount = float(splitwise_expense.get("cost", "0"))
+    if my_user_id:
+        for user_entry in splitwise_expense.get("users", []):
+            if user_entry.get("user_id") == my_user_id:
+                paid = float(user_entry.get("paid_share", "0"))
+                if paid > 0:
+                    match_amount = paid
+                break
+
     sw_date_str = splitwise_expense.get("date", "")
     try:
         sw_date = datetime.fromisoformat(sw_date_str.replace("Z", "+00:00")).date()
@@ -75,18 +88,18 @@ def rank_candidates(
         if txn.get("is_credit", False):
             continue
 
-        # Date score: max 50, lose 10 per day
+        # Date score: max 50, lose 5 per day (covers 10-day window)
         try:
             txn_date = datetime.strptime(txn.get("date", ""), "%Y-%m-%d").date()
         except (ValueError, TypeError):
             continue
         day_diff = abs((txn_date - sw_date).days)
-        date_score = max(0, 50 - day_diff * 10)
+        date_score = max(0, 50 - day_diff * 5)
 
         # Amount score: max 50, proportional to closeness
         txn_amount = txn.get("amount", 0)
-        if sw_cost > 0:
-            pct_diff = abs(txn_amount - sw_cost) / sw_cost
+        if match_amount > 0:
+            pct_diff = abs(txn_amount - match_amount) / match_amount
             amount_score = max(0, 50 - pct_diff * 100)
         else:
             amount_score = 0
@@ -158,17 +171,19 @@ def apply_matches(
 def run_interactive_matching(
     splitwise_shared: list[dict],
     card_transactions: list[dict],
+    my_user_id: int = None,
     match_file: Optional[Path] = None,
 ) -> list[dict]:
     """
     Run an interactive CLI session to match Splitwise expenses to card transactions.
 
-    For each unmatched Splitwise expense, shows top 3 card transaction candidates
-    and prompts the user to pick one.
+    For each unmatched Splitwise expense, shows top candidates ranked by
+    date/amount similarity and prompts the user to pick one.
 
     Args:
         splitwise_shared: "i_paid_shared" expenses from Splitwise.
         card_transactions: All card transactions.
+        my_user_id: Splitwise user ID (for paid_share lookup in ranking).
         match_file: Path to the match persistence file.
 
     Returns:
@@ -200,9 +215,19 @@ def run_interactive_matching(
         desc = sw_exp.get("description", "?")
         date = sw_exp.get("date", "?")[:10]
 
-        print(f"--- [{i}/{len(unmatched_sw)}] Splitwise: {desc} | ${cost} | {date} ---")
+        # Show paid_share if different from cost
+        paid_str = ""
+        if my_user_id:
+            for u in sw_exp.get("users", []):
+                if u.get("user_id") == my_user_id:
+                    paid = float(u.get("paid_share", "0"))
+                    if abs(paid - float(cost)) > 0.01:
+                        paid_str = f" (you paid: ${paid:.2f})"
+                    break
 
-        candidates = rank_candidates(sw_exp, available_cards)
+        print(f"--- [{i}/{len(unmatched_sw)}] Splitwise: {desc} | ${cost}{paid_str} | {date} ---")
+
+        candidates = rank_candidates(sw_exp, available_cards, my_user_id=my_user_id)
 
         if not candidates:
             print("  No candidates found.")

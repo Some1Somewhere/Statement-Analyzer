@@ -100,6 +100,29 @@ class TestClassifyExpenses:
         assert result["others_paid"][0]["id"] == 3002
 
 
+    def test_debt_consolidation_filtered(self):
+        """Settle all balances (debt_consolidation) should be skipped."""
+        expenses = [
+            {
+                "id": 4001,
+                "cost": "36.25",
+                "description": "Settle all balances",
+                "date": "2026-01-15T12:00:00Z",
+                "payment": False,
+                "currency_code": "USD",
+                "creation_method": "debt_consolidation",
+                "users": [
+                    {"user_id": 2, "paid_share": "36.25", "owed_share": "0.00"},
+                    {"user_id": 1, "paid_share": "0.00", "owed_share": "36.25"},
+                ],
+            },
+        ]
+        result = SplitwiseClient.classify_expenses(expenses, my_user_id=1)
+        assert len(result["others_paid"]) == 0
+        assert len(result["i_paid_shared"]) == 0
+        assert len(result["i_paid_solo"]) == 0
+
+
 class TestConvertToTransactions:
     """Test converting Splitwise expenses to transaction format."""
 
