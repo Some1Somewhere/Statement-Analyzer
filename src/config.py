@@ -12,8 +12,8 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Model names
-GEMINI_FLASH_MODEL = "gemini-2.0-flash-exp"
-GEMINI_PRO_MODEL = "gemini-1.5-pro"
+GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+GEMINI_PRO_MODEL = "gemini-2.5-pro"
 
 # Directory paths
 BASE_DIR = Path(__file__).parent.parent
@@ -23,6 +23,12 @@ INTERMEDIATE_DIR = DATA_DIR / "intermediate"
 OUTPUT_DIR = BASE_DIR / "output"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 CARDS_FILE = DATA_DIR / "cards.json"
+
+SPLITWISE_API_KEY = os.getenv("SPLITWISE_API_KEY")
+SPLITWISE_BASE_URL = "https://secure.splitwise.com/api/v3.0"
+SPLITWISE_MATCHES_FILE = DATA_DIR / "splitwise_matches.json"
+# (connect, read) timeouts in seconds for Splitwise HTTP requests
+SPLITWISE_REQUEST_TIMEOUT = (10, 30)
 
 
 def _load_card_types() -> dict:

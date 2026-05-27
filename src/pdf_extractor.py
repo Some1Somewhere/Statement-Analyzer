@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -191,13 +191,17 @@ class PDFExtractor:
             source = result.get("source", "unknown")
             source_display = result.get("source_display", source)
 
-            for txn in result.get("transactions", []):
-                # Add source info to each transaction
+            for idx, txn in enumerate(result.get("transactions", [])):
+                # Add source info to each transaction. file_index is the
+                # transaction's position within its statement file; it gives
+                # generate_transaction_id a stable tiebreaker so duplicate
+                # same-day charges don't collapse to one id.
                 txn_with_source = {
                     **txn,
                     "source": source,
                     "source_display": source_display,
                     "statement_file": result.get("file", ""),
+                    "file_index": idx,
                 }
                 all_transactions.append(txn_with_source)
 

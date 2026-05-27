@@ -1,6 +1,6 @@
 # Statement Analyzer
 
-A CLI tool to extract expenses from credit card PDF statements using Gemini AI, auto-categorize them, and output to a standardized CSV format.
+A CLI tool to extract expenses from credit card PDF statements using Gemini AI, auto-categorize them, merge Splitwise shared expense data, and output to a standardized CSV format.
 
 ## Setup
 
@@ -15,11 +15,13 @@ A CLI tool to extract expenses from credit card PDF statements using Gemini AI, 
    pip install -r requirements.txt
    ```
 
-3. **Set up API key:**
+3. **Set up API keys:**
    - Get your Gemini API key from https://aistudio.google.com/app/apikey
+   - Get your Splitwise API key from https://secure.splitwise.com/apps (register an app, use the API key)
    - Create a `.env` file with:
      ```
      GEMINI_API_KEY=your_api_key_here
+     SPLITWISE_API_KEY=your_api_key_here
      ```
 
 4. **Configure your cards:**
@@ -71,6 +73,18 @@ python -m src.main export --summary
 python -m src.main export --format xlsx
 ```
 
+**Splitwise Integration:**
+```bash
+# Fetch and cache Splitwise expenses (USD only)
+python -m src.main fetch-splitwise
+
+# Fetch only recent expenses
+python -m src.main fetch-splitwise --days 30
+
+# Interactively match card transactions to Splitwise shared expenses
+python -m src.main match-splitwise
+```
+
 **Other Commands:**
 ```bash
 # List available card types and PDF counts
@@ -86,20 +100,44 @@ When you have new statements to process:
 
 1. **Add new PDF statements** to the appropriate folder in `statements/`
 
-2. **Clear old data and extract fresh** (recommended to avoid duplicates):
-   ```bash
-   python -m src.main extract --clear
-   ```
-   
-   Or if you want to keep old data and only extract new files:
+2. **Extract card transactions from PDFs:**
    ```bash
    python -m src.main extract --days 30
    ```
+   Or clear old data and re-extract everything fresh:
+   ```bash
+   python -m src.main extract --clear
+   ```
 
-3. **Export to CSV**:
+3. **Fetch Splitwise expenses for the same period:**
+   ```bash
+   python -m src.main fetch-splitwise --days 30
+   ```
+
+4. **Match card charges to Splitwise shared expenses:**
+   ```bash
+   python -m src.main match-splitwise
+   ```
+   This shows each Splitwise expense you paid for and ranks card transactions by date/amount similarity. You pick which card charge corresponds to each. Matches are saved to `data/splitwise_matches.json` and persist across exports.
+
+5. **Export to CSV:**
    ```bash
    python -m src.main export --summary
    ```
+
+### What `export` does
+
+The export command merges data from multiple sources:
+- **Card transactions** from PDF extraction (intermediate cache)
+- **"Others paid" Splitwise expenses** — things friends paid where you owe a share. These don't appear on any card, so they're added as new rows with source "Splitwise"
+- **Match adjustments** — for card transactions matched to Splitwise, the amounts are split: "Amount I owe" shows your share, "Other people Owe me" shows what others owe
+
+### Reading the output
+
+In the `Other people Owe me` column:
+- **Blank** = not yet determined (review manually — is this a shared expense?)
+- **0** = auto-set for work expenses (Subway)
+- **A dollar amount** = Splitwise-matched, automatically computed from the split
 
 > **Note:** The `export` command combines ALL intermediate JSON files. Use `--clear` when extracting to start fresh and avoid duplicates.
 
@@ -112,11 +150,14 @@ statements/           # Put your PDF statements here
 └── ...
 
 data/
-├── cards.json        # Your card configuration (gitignored)
+├── cards.json              # Your card configuration (gitignored)
 ├── cards.example.json
-├── categories.json   # Your category keywords (gitignored)
+├── categories.json         # Your category keywords (gitignored)
 ├── categories.example.json
-└── intermediate/     # Cached extraction results (JSON)
+├── splitwise_matches.json  # Card-to-Splitwise match mappings (gitignored)
+└── intermediate/           # Cached extraction results (JSON)
+    ├── {card}_{file}.json  # Per-statement card transaction cache
+    └── splitwise_expenses.json  # Splitwise API response cache
 
 output/
 └── expenses.csv      # Final output
@@ -130,10 +171,10 @@ output/
 | Month | Month name |
 | Category | Auto-categorized (Health, Rent, Restaurant, etc.) |
 | Item | Transaction description |
-| Payment Type | Which card was used |
-| Amount Charged | Transaction amount |
-| Other people Owe me | For shared expenses (fill in manually) |
-| Amount I owe | Your portion |
+| Payment Type | Which card was used (or "Splitwise" for others-paid expenses) |
+| Amount Charged | Full transaction amount |
+| Other people Owe me | Splitwise-computed split, 0 for work expenses, blank for manual review |
+| Amount I owe | Your portion (full amount if unmatched, split amount if Splitwise-matched) |
 | Notes | Empty, for manual notes |
 
 ## Categories
