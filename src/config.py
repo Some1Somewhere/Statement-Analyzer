@@ -12,8 +12,8 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Model names
-GEMINI_FLASH_MODEL = "gemini-2.0-flash-exp"
-GEMINI_PRO_MODEL = "gemini-1.5-pro"
+GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+GEMINI_PRO_MODEL = "gemini-2.5-pro"
 
 # Directory paths
 BASE_DIR = Path(__file__).parent.parent
