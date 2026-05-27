@@ -3,10 +3,14 @@
 import json
 import requests
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-from .config import SPLITWISE_API_KEY, SPLITWISE_BASE_URL, INTERMEDIATE_DIR
+from .config import (
+    SPLITWISE_API_KEY,
+    SPLITWISE_BASE_URL,
+    SPLITWISE_REQUEST_TIMEOUT,
+    INTERMEDIATE_DIR,
+)
 
 
 class SplitwiseClient:
@@ -25,9 +29,19 @@ class SplitwiseClient:
 
     def get_current_user(self) -> dict:
         """Get the current authenticated user's info."""
-        resp = self.session.get(f"{self.base_url}/get_current_user")
+        resp = self.session.get(
+            f"{self.base_url}/get_current_user", timeout=SPLITWISE_REQUEST_TIMEOUT
+        )
         resp.raise_for_status()
-        return resp.json()["user"]
+        data = resp.json()
+        # Splitwise returns HTTP 200 with an error envelope for some auth
+        # failures, so a missing "user" key means the request did not succeed.
+        if not isinstance(data, dict) or "user" not in data:
+            raise ValueError(
+                "Splitwise did not return a user. Check SPLITWISE_API_KEY. "
+                f"Response: {data}"
+            )
+        return data["user"]
 
     def get_expenses(
         self,
@@ -50,14 +64,16 @@ class SplitwiseClient:
         offset = 0
 
         while True:
-            params = {"limit": limit, "offset": offset}
+            params: dict[str, str | int] = {"limit": limit, "offset": offset}
             if dated_after:
                 params["dated_after"] = dated_after
             if dated_before:
                 params["dated_before"] = dated_before
 
             resp = self.session.get(
-                f"{self.base_url}/get_expenses", params=params
+                f"{self.base_url}/get_expenses",
+                params=params,
+                timeout=SPLITWISE_REQUEST_TIMEOUT,
             )
             resp.raise_for_status()
             expenses = resp.json().get("expenses", [])
@@ -85,8 +101,11 @@ class SplitwiseClient:
             Dict with user_id and classified expenses.
         """
         user = self.get_current_user()
-        my_user_id = user["id"]
-        print(f"Authenticated as: {user['first_name']} {user['last_name']}")
+        my_user_id = user.get("id")
+        if my_user_id is None:
+            raise ValueError(f"Splitwise user record has no id. Response: {user}")
+        name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+        print(f"Authenticated as: {name or 'Splitwise user'}")
 
         expenses = self.get_expenses(dated_after, dated_before)
         print(f"Fetched {len(expenses)} expenses from Splitwise")
@@ -126,7 +145,11 @@ class SplitwiseClient:
         Returns:
             Dict with keys: others_paid, i_paid_shared, i_paid_solo
         """
-        result = {"others_paid": [], "i_paid_shared": [], "i_paid_solo": []}
+        result: dict[str, list[dict]] = {
+            "others_paid": [],
+            "i_paid_shared": [],
+            "i_paid_solo": [],
+        }
 
         for expense in expenses:
             # Skip payments (settling up)
@@ -155,8 +178,15 @@ class SplitwiseClient:
             if my_share is None:
                 continue
 
-            paid = float(my_share.get("paid_share", "0"))
-            owed = float(my_share.get("owed_share", "0"))
+            try:
+                paid = float(my_share.get("paid_share", "0"))
+                owed = float(my_share.get("owed_share", "0"))
+            except (ValueError, TypeError):
+                print(
+                    f"  Warning: skipping expense {expense.get('id')} "
+                    f"with unparseable share values."
+                )
+                continue
 
             if paid == 0 and owed > 0:
                 result["others_paid"].append(expense)
@@ -222,5 +252,11 @@ class SplitwiseClient:
         cache_path = INTERMEDIATE_DIR / "splitwise_expenses.json"
         if not cache_path.exists():
             return None
-        with open(cache_path) as f:
-            return json.load(f)
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Splitwise cache is corrupt ({cache_path}). "
+                f"Re-run 'fetch-splitwise' to regenerate it. ({e})"
+            ) from e

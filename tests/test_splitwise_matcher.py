@@ -1,8 +1,6 @@
 """Tests for Splitwise matcher — ID generation and match persistence."""
 
-import json
 import pytest
-from pathlib import Path
 
 from src.splitwise_matcher import (
     generate_transaction_id,
@@ -47,6 +45,19 @@ class TestGenerateTransactionId:
         txn_a = {**base, "amount": 25.50}
         txn_b = {**base, "amount": 30.00}
         assert generate_transaction_id(txn_a) != generate_transaction_id(txn_b)
+
+    def test_duplicate_charges_disambiguated_by_file_index(self):
+        """Two identical same-day charges must get distinct ids via file_index."""
+        base = {
+            "source": "chase_sapphire",
+            "statement_file": "stmt.pdf",
+            "date": "2026-01-15",
+            "description": "UBER TRIP",
+            "amount": 4.50,
+        }
+        first = {**base, "file_index": 0}
+        second = {**base, "file_index": 1}
+        assert generate_transaction_id(first) != generate_transaction_id(second)
 
 
 class TestMatchPersistence:
@@ -167,6 +178,40 @@ class TestApplyMatches:
         assert result[0]["splitwise_matched"] is True
         assert result[0]["splitwise_owed"] == 41.15
         assert result[0]["splitwise_others_owe"] == pytest.approx(41.15)
+
+    def test_legacy_match_still_applies_with_file_index_present(self):
+        """A match saved in the legacy id format must still resolve once the
+        transaction carries a file_index (backward compatibility)."""
+        transactions = [
+            {
+                "date": "2026-01-17",
+                "description": "WHOLE FOODS MARKET",
+                "amount": 82.30,
+                "is_credit": False,
+                "source": "amex_bcp",
+                "statement_file": "stmt.pdf",
+                "file_index": 3,  # present now, absent when the match was saved
+            }
+        ]
+        # Legacy id has no trailing file_index segment.
+        matches = [
+            {
+                "splitwise_id": 1001,
+                "card_transaction_id": "amex_bcp|stmt.pdf|2026-01-17|WHOLE FOODS MARKET|82.3",
+            }
+        ]
+        sw_expenses = [
+            {
+                "id": 1001,
+                "cost": "82.30",
+                "users": [
+                    {"user_id": 1, "paid_share": "82.30", "owed_share": "41.15"},
+                ],
+            }
+        ]
+        result = apply_matches(transactions, matches, sw_expenses, my_user_id=1)
+        assert result[0]["splitwise_matched"] is True
+        assert result[0]["splitwise_owed"] == 41.15
 
     def test_unmatched_transaction_unchanged(self):
         """An unmatched card txn should pass through with no splitwise fields."""

@@ -1,11 +1,13 @@
 """Output formatter for generating the required CSV format."""
 
+import json
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .config import OUTPUT_DIR, OUTPUT_COLUMNS, CARD_TYPES
+from .splitwise_matcher import generate_transaction_id
 
 
 class Formatter:
@@ -15,6 +17,39 @@ class Formatter:
         """Initialize the formatter."""
         # Ensure output directory exists
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _build_frame(self, transactions: list[dict]) -> pd.DataFrame:
+        """
+        Build the sorted output frame, carrying a hidden ``_card_id`` column.
+
+        ``_card_id`` lets callers map each final CSV row back to the
+        transaction that produced it (see ``format_with_row_ids``). A stable
+        sort keeps same-date rows in their input order so that mapping is
+        reproducible across runs.
+        """
+        formatted_rows = []
+        card_ids = []
+
+        for txn in transactions:
+            # Skip credits/payments/refunds (they're not expenses)
+            if txn.get("is_credit", False):
+                continue
+
+            formatted_rows.append(self._format_single_transaction(txn))
+            card_ids.append(generate_transaction_id(txn))
+
+        # Create DataFrame with required columns, plus the id sidecar column.
+        df = pd.DataFrame(formatted_rows, columns=OUTPUT_COLUMNS)
+        df["_card_id"] = card_ids
+
+        # Sort by date (stable, so equal dates keep input order)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.sort_values("Date", ascending=True, kind="stable")
+
+        # Format date back to string
+        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+
+        return df
 
     def format_transactions(self, transactions: list[dict]) -> pd.DataFrame:
         """
@@ -26,27 +61,21 @@ class Formatter:
         Returns:
             DataFrame with the required columns
         """
-        formatted_rows = []
+        return self._build_frame(transactions).drop(columns=["_card_id"])
 
-        for txn in transactions:
-            # Skip credits/payments/refunds (they're not expenses)
-            if txn.get("is_credit", False):
-                continue
+    def format_with_row_ids(
+        self, transactions: list[dict]
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """
+        Format transactions and return the per-row card-transaction ids.
 
-            row = self._format_single_transaction(txn)
-            formatted_rows.append(row)
-
-        # Create DataFrame with required columns
-        df = pd.DataFrame(formatted_rows, columns=OUTPUT_COLUMNS)
-
-        # Sort by date
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.sort_values("Date", ascending=True)
-
-        # Format date back to string
-        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
-
-        return df
+        Returns:
+            (DataFrame with the required columns, list of card_transaction_id
+            strings in the same order as the DataFrame rows).
+        """
+        df = self._build_frame(transactions)
+        row_ids = df["_card_id"].tolist()
+        return df.drop(columns=["_card_id"]), row_ids
 
     def _format_single_transaction(self, txn: dict) -> dict:
         """
@@ -131,14 +160,26 @@ class Formatter:
         if output_path is None:
             output_path = OUTPUT_DIR / filename
 
-        # Format transactions
-        df = self.format_transactions(transactions)
+        # Format transactions, keeping the per-row id mapping
+        df, row_ids = self.format_with_row_ids(transactions)
 
         # Export to CSV
         df.to_csv(output_path, index=False)
 
+        # Persist the row -> card_transaction_id map so manual-match can resolve
+        # an expenses.csv row number back to its exact transaction.
+        self._write_row_map(output_path, row_ids)
+
         print(f"Exported {len(df)} expenses to: {output_path}")
         return output_path
+
+    @staticmethod
+    def _write_row_map(csv_path: Path, row_ids: list[str]) -> Path:
+        """Write the ordered card_transaction_id list beside the exported CSV."""
+        map_path = csv_path.parent / f"{csv_path.stem}.rowmap.json"
+        with open(map_path, "w") as f:
+            json.dump(row_ids, f, indent=2)
+        return map_path
 
     def export_to_excel(
         self,

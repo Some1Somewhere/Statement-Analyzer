@@ -7,6 +7,9 @@ CLI tool to extract, categorize, and format expenses from credit card statements
 Usage:
     python -m src.main extract [--card TYPE] [--input PATH]
     python -m src.main categorize [--use-ai]
+    python -m src.main fetch-splitwise [--days N]
+    python -m src.main match-splitwise
+    python -m src.main manual-match SPLITWISE_ROW EXPENSES_ROW
     python -m src.main export [--output PATH] [--format csv|xlsx]
     python -m src.main run [--input PATH] [--output PATH]
 """
@@ -109,7 +112,7 @@ def cmd_export(args):
             export_unmatched_splitwise(i_paid_shared, matches or [], my_user_id)
 
     if not transactions:
-        print("No transactions found. Run 'extract' command first.")
+        print("No transactions found. Run 'extract' and/or 'fetch-splitwise' first.")
         return 1
 
     categorized = categorizer.categorize_transactions(transactions)
@@ -135,7 +138,7 @@ def cmd_export(args):
 
 
 def cmd_run(args):
-    """Run the full pipeline: extract, categorize, export."""
+    """Run the full pipeline: extract, fetch Splitwise, optionally match, categorize, export."""
     from .splitwise_client import SplitwiseClient
     from .splitwise_matcher import run_interactive_matching, load_matches, apply_matches
 
@@ -251,7 +254,7 @@ def cmd_add_keyword(args):
     if categorizer.add_keyword(args.category, args.keyword):
         print(f"Added '{args.keyword}' to category '{args.category}'")
     else:
-        print(f"Failed to add keyword")
+        print("Failed to add keyword")
 
 
 def cmd_fetch_splitwise(args):
@@ -300,10 +303,8 @@ def cmd_match_splitwise(args):
 def cmd_manual_match(args):
     """Manually match a Splitwise expense to a card transaction by row numbers."""
     import csv as csv_mod
-    from .splitwise_client import SplitwiseClient
-    from .splitwise_matcher import (
-        generate_transaction_id, load_matches, save_matches,
-    )
+    import json
+    from .splitwise_matcher import load_matches, save_matches
     from datetime import datetime as dt
 
     unmatched_path = OUTPUT_DIR / "unmatched_splitwise.csv"
@@ -346,30 +347,25 @@ def cmd_manual_match(args):
     exp_date = exp_row["Date"]
     exp_amount = exp_row["Amount Charged"]
 
-    # Find the card transaction that matches this expenses.csv row
-    # Load card transactions in the same order as export
-    extractor = PDFExtractor()
-    card_transactions = extractor.get_all_transactions()
-    # Filter credits, sort by date — same as formatter
-    card_transactions = [t for t in card_transactions if not t.get("is_credit")]
-    card_transactions.sort(key=lambda t: t.get("date", ""))
+    # Resolve the card transaction id from the row map written during export.
+    # This is the exact id export used for that CSV row, so it cannot drift from
+    # the displayed order (unlike re-deriving and re-sorting the list here).
+    rowmap_path = expenses_path.parent / f"{expenses_path.stem}.rowmap.json"
+    if not rowmap_path.exists():
+        print(f"Row map not found: {rowmap_path}")
+        print("Re-run 'export' to regenerate it, then try again.")
+        return 1
+    with open(rowmap_path) as f:
+        row_ids = json.load(f)
 
-    # Also include Splitwise "others_paid" in same order as export
-    cached = SplitwiseClient.load_cached()
-    if cached:
-        others_paid = cached.get("others_paid", [])
-        if others_paid:
-            sw_txns = SplitwiseClient.to_transactions(others_paid, cached.get("user_id"))
-            sw_txns = [t for t in sw_txns if not t.get("is_credit")]
-            card_transactions.extend(sw_txns)
-            card_transactions.sort(key=lambda t: t.get("date", ""))
-
-    if exp_row_num > len(card_transactions):
-        print(f"Row {exp_row_num} exceeds available transactions ({len(card_transactions)}).")
+    if len(row_ids) != len(expenses_rows):
+        print("Row map is out of sync with expenses.csv. Re-run 'export'.")
         return 1
 
-    matched_txn = card_transactions[exp_row_num - 1]
-    card_id = generate_transaction_id(matched_txn)
+    card_id = row_ids[exp_row_num - 1]
+    if not card_id:
+        print(f"Row {exp_row_num} has no matchable card transaction.")
+        return 1
 
     # Confirm with user
     print(f"Splitwise (row {sw_row_num}): {sw_desc} | ${sw_row['You Paid']} | {sw_date}")
@@ -387,7 +383,7 @@ def cmd_manual_match(args):
         "matched_at": dt.now().isoformat(),
     })
     save_matches(matches)
-    print(f"Matched! Run 'export' to update CSVs.")
+    print("Matched! Run 'export' to update CSVs.")
     return 0
 
 

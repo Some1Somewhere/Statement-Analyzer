@@ -27,9 +27,8 @@ CARDS_FILE = DATA_DIR / "cards.json"
 SPLITWISE_API_KEY = os.getenv("SPLITWISE_API_KEY")
 SPLITWISE_BASE_URL = "https://secure.splitwise.com/api/v3.0"
 SPLITWISE_MATCHES_FILE = DATA_DIR / "splitwise_matches.json"
-
-# Categories where shared expenses are common (for "missing from Splitwise" detection)
-SHAREABLE_CATEGORIES = ["Restaurant", "Entertainment", "Vacations", "Dates", "Groceries", "Household"]
+# (connect, read) timeouts in seconds for Splitwise HTTP requests
+SPLITWISE_REQUEST_TIMEOUT = (10, 30)
 
 
 def _load_card_types() -> dict:

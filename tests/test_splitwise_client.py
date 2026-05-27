@@ -1,6 +1,5 @@
 """Tests for Splitwise client expense classification."""
 
-import pytest
 from src.splitwise_client import SplitwiseClient
 
 

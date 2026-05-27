@@ -1,6 +1,5 @@
 """Tests for formatter with Splitwise match integration."""
 
-import pytest
 from src.formatter import Formatter
 
 

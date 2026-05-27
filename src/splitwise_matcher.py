@@ -10,12 +10,23 @@ import csv
 from .config import SPLITWISE_MATCHES_FILE, OUTPUT_DIR
 
 
-def generate_transaction_id(txn: dict) -> str:
+def generate_transaction_id(txn: dict, *, include_index: bool = True) -> str:
     """
     Generate a deterministic ID for a card transaction.
 
-    Built from source + statement_file + date + description + amount.
-    Stable across re-runs since the same PDF always extracts the same data.
+    Built from source + statement_file + date + description + amount, plus the
+    transaction's position within its source file (``file_index``) when
+    available. The positional tiebreaker disambiguates genuine duplicate
+    charges (e.g. two identical same-day Uber trips on one statement) that
+    would otherwise collapse to the same ID and cross-apply a single match.
+
+    ``include_index=False`` reproduces the legacy ID format (no ``file_index``).
+    Lookups try the current ID first and fall back to the legacy ID, so matches
+    saved before the tiebreaker was introduced still resolve — only true
+    duplicate charges ever need re-matching.
+
+    Stable across re-runs since the same PDF always extracts the same data in
+    the same order.
     """
     parts = [
         txn.get("source", ""),
@@ -24,6 +35,8 @@ def generate_transaction_id(txn: dict) -> str:
         txn.get("description", ""),
         str(txn.get("amount", 0)),
     ]
+    if include_index and "file_index" in txn:
+        parts.append(str(txn["file_index"]))
     return "|".join(parts)
 
 
@@ -32,8 +45,15 @@ def load_matches(match_file: Optional[Path] = None) -> list[dict]:
     path = match_file or SPLITWISE_MATCHES_FILE
     if not path.exists():
         return []
-    with open(path) as f:
-        return json.load(f)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        # Matches are hand-built user work that cannot be regenerated from the
+        # API, so fail loudly rather than silently discarding the file.
+        raise ValueError(
+            f"Match file is corrupt ({path}). Fix or delete it to start fresh. ({e})"
+        ) from e
 
 
 def save_matches(matches: list[dict], match_file: Optional[Path] = None):
@@ -48,7 +68,7 @@ def rank_candidates(
     splitwise_expense: dict,
     card_transactions: list[dict],
     top_n: int = 5,
-    my_user_id: int = None,
+    my_user_id: Optional[int] = None,
 ) -> list[dict]:
     """
     Rank card transactions as candidates for matching a Splitwise expense.
@@ -147,14 +167,26 @@ def apply_matches(
 
     result = []
     for txn in transactions:
-        txn_id = generate_transaction_id(txn)
+        # Try the current id, then the legacy id (no file_index) so matches
+        # saved before the tiebreaker was added still resolve.
+        sw_id = card_to_sw.get(generate_transaction_id(txn))
+        if sw_id is None:
+            sw_id = card_to_sw.get(
+                generate_transaction_id(txn, include_index=False)
+            )
         txn_copy = {**txn}
 
-        if txn_id in card_to_sw:
-            sw_id = card_to_sw[txn_id]
+        if sw_id is not None:
             sw_exp = sw_by_id.get(sw_id)
 
-            if sw_exp:
+            if sw_exp is None:
+                # Stale match: the referenced expense is no longer in the cache.
+                print(
+                    f"Warning: match references Splitwise expense {sw_id} "
+                    f"not in the current cache; leaving '{txn.get('description', '')}' "
+                    f"unsplit."
+                )
+            else:
                 # Find my share
                 for user_entry in sw_exp.get("users", []):
                     if user_entry.get("user_id") == my_user_id:
@@ -162,8 +194,17 @@ def apply_matches(
                         owed = float(user_entry.get("owed_share", "0"))
                         txn_copy["splitwise_matched"] = True
                         txn_copy["splitwise_owed"] = owed
-                        txn_copy["splitwise_others_owe"] = paid - owed
+                        txn_copy["splitwise_others_owe"] = round(paid - owed, 2)
                         break
+                else:
+                    # my_user_id is not in this expense (e.g. removed from the
+                    # group). Without a share we cannot split, so warn instead of
+                    # silently exporting the full card amount as if unmatched.
+                    print(
+                        f"Warning: Splitwise expense {sw_id} has no entry for "
+                        f"user {my_user_id}; leaving '{txn.get('description', '')}' "
+                        f"unsplit."
+                    )
 
         result.append(txn_copy)
 
@@ -173,7 +214,7 @@ def apply_matches(
 def run_interactive_matching(
     splitwise_shared: list[dict],
     card_transactions: list[dict],
-    my_user_id: int = None,
+    my_user_id: Optional[int] = None,
     match_file: Optional[Path] = None,
 ) -> list[dict]:
     """
@@ -192,6 +233,7 @@ def run_interactive_matching(
         Updated list of all matches (existing + new).
     """
     matches = load_matches(match_file)
+    initial_count = len(matches)
 
     # Build sets of already-matched IDs
     matched_sw_ids = {m["splitwise_id"] for m in matches}
@@ -204,10 +246,12 @@ def run_interactive_matching(
         print("No unmatched Splitwise expenses to process.")
         return matches
 
-    # Filter out already-matched card transactions
+    # Filter out already-matched card transactions (check both the current and
+    # legacy id so cards matched before the tiebreaker change stay matched).
     available_cards = [
         t for t in card_transactions
         if generate_transaction_id(t) not in matched_card_ids
+        and generate_transaction_id(t, include_index=False) not in matched_card_ids
     ]
 
     print(f"\n{len(unmatched_sw)} Splitwise expense(s) to match.\n")
@@ -255,9 +299,9 @@ def run_interactive_matching(
                 f"[score: {score:.0f}]"
             )
 
-        print(f"  0. None of these")
-        print(f"  n. Not on card (Venmo/cash)")
-        print(f"  q. Quit matching")
+        print("  0. None of these")
+        print("  n. Not on card (Venmo/cash)")
+        print("  q. Quit matching")
 
         choice = input("  Pick: ").strip().lower()
 
@@ -292,14 +336,14 @@ def run_interactive_matching(
                         t for t in available_cards
                         if generate_transaction_id(t) != card_id
                     ]
-                    print(f"  Matched!")
+                    print("  Matched!")
                 else:
                     print("  Invalid choice, skipping.")
             except ValueError:
                 print("  Invalid choice, skipping.")
 
     save_matches(matches, match_file)
-    new_count = len(matches) - len(matched_sw_ids)
+    new_count = len(matches) - initial_count
     print(f"\nDone. {new_count} new match(es) saved. Total: {len(matches)}.")
     return matches
 
@@ -313,8 +357,8 @@ def export_unmatched_splitwise(
     """
     Export unmatched Splitwise i_paid_shared expenses to a CSV.
 
-    These are expenses you added to Splitwise (you paid) but haven't
-    been matched to a card transaction yet.
+    These are expenses you added to Splitwise (you paid) that have not yet
+    been matched to a card transaction or marked as not on card.
 
     Args:
         i_paid_shared: The "i_paid_shared" expenses from Splitwise cache.
@@ -337,8 +381,8 @@ def export_unmatched_splitwise(
             (u for u in e.get("users", []) if u.get("user_id") == my_user_id),
             None,
         )
-        paid = float(my_entry["paid_share"]) if my_entry else 0
-        owed = float(my_entry["owed_share"]) if my_entry else 0
+        paid = float(my_entry.get("paid_share", "0")) if my_entry else 0.0
+        owed = float(my_entry.get("owed_share", "0")) if my_entry else 0.0
 
         date_str = e.get("date", "")[:10]
         rows.append({
