@@ -68,6 +68,26 @@ CATEGORIES = [
 # Default category when no match is found
 DEFAULT_CATEGORY = "UNKNOWN"
 
+# Substring patterns for transactions that are almost always solo / individual
+# expenses — nobody else owes you a share. When any of these appears in the
+# merchant description, "Other people Owe me" is forced to 0 in the export
+# (instead of left blank for you to fill in).
+#
+# Splitwise-matched transactions still use their split amounts — the user's
+# explicit match wins over this heuristic.
+#
+# Intentionally does NOT include "subway" — real NYC subway charges post as
+# "MTA*NYCT PAYGO" / "MTA NYCT PAYGO", which the "mta"/"nyct" patterns catch.
+# A bare "Subway" line is almost always the sandwich chain.
+SOLO_EXPENSE_PATTERNS = (
+    "mta",           # MTA tap-to-pay, NYCT PAYGO, LIRR, Metro-North
+    "nyct",
+    "path tapp",     # PATH (NJ)
+    "lirr",
+    "metro-north",
+    "metro north",
+)
+
 # CSV output columns
 OUTPUT_COLUMNS = [
     "Date",

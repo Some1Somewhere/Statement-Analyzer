@@ -34,7 +34,7 @@ What `export` does behind the scenes:
 - Categorizes everything via keyword matching
 - Writes to `output/expenses.csv`
 
-After export, review `Other people Owe me` column: blank = not yet determined (you fill in manually), 0 = work expense (auto-set for Subway), a dollar amount = Splitwise-matched split.
+After export, review `Other people Owe me` column: blank = not yet determined (you fill in manually), 0 = solo / individual expense (auto-set for public transit — MTA, NYCT, PATH, LIRR, Metro-North — where nobody else owes a share), a dollar amount = Splitwise-matched split.
 
 ## Commands
 
@@ -91,7 +91,7 @@ Extraction results are cached as intermediate JSON files. The `export` command r
 - **`src/gemini_client.py`** — Wraps `google-generativeai`. `extract_transactions_from_pdf()` uploads PDF and prompts Gemini Flash for structured JSON. `categorize_transaction()` uses Gemini Pro for ambiguous items.
 - **`src/pdf_extractor.py`** — Orchestrates PDF processing. Iterates card folders, calls GeminiClient, saves/loads intermediate JSON. `get_all_transactions()` flattens all cached results into a single list with source metadata attached.
 - **`src/categorizer.py`** — Keyword-first categorization from `categories.json`. Scores by longest keyword match. Lazy-loads GeminiClient only when `--use-ai` is set. Also handles `add_keyword` persistence.
-- **`src/formatter.py`** — Converts categorized transactions to the output DataFrame. Filters out credits (`is_credit: true`), extracts month names, sorts by date. Special case: "subway" in description sets `Other people Owe me` to 0 (work expense). Splitwise-matched transactions get split amounts in "Amount I owe" and "Other people Owe me".
+- **`src/formatter.py`** — Converts categorized transactions to the output DataFrame. Filters out credits (`is_credit: true`), extracts month names, sorts by date. Solo-expense rule: descriptions matching `config.SOLO_EXPENSE_PATTERNS` (NYC subway / MTA / NYCT / PATH / LIRR / Metro-North) set `Other people Owe me` to 0, since transit is an individual expense nobody else owes a share of. Splitwise-matched transactions get split amounts in "Amount I owe" and "Other people Owe me", and that explicit match wins over the solo-expense heuristic.
 - **`src/splitwise_client.py`** — REST wrapper for Splitwise API using `requests`. Fetches expenses, classifies them (others_paid / i_paid_shared / i_paid_solo), filters to USD-only, converts "others_paid" into transaction dicts, caches to `data/intermediate/splitwise_expenses.json`.
 - **`src/splitwise_matcher.py`** — Generates deterministic transaction IDs, ranks card transactions as candidates for Splitwise expenses (by date proximity + amount similarity), runs interactive CLI matching, persists matches to `data/splitwise_matches.json`, and applies match data to adjust "Amount I owe" / "Other people Owe me" on card transactions.
 

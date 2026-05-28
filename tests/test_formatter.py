@@ -62,3 +62,75 @@ class TestSplitwiseFormatting:
         ]
         df = formatter.format_transactions(transactions)
         assert df.iloc[0]["Payment Type"] == "Splitwise"
+
+
+class TestSoloExpenseTransitRule:
+    """Transit charges are individual expenses — auto-set 'Other people Owe me' to 0."""
+
+    def test_mta_nyct_paygo_is_solo_expense(self):
+        """Real MTA tap-to-pay descriptions must flag as solo expenses."""
+        formatter = Formatter()
+        transactions = [
+            {
+                "date": "2026-04-10",
+                "description": "MTA*NYCT PAYGO NEW YORK NY",
+                "amount": 2.90,
+                "is_credit": False,
+                "source": "amex_bcp",
+                "source_display": "Amex BCP",
+                "category": "Transport",
+            }
+        ]
+        df = formatter.format_transactions(transactions)
+        assert df.iloc[0]["Other people Owe me"] == 0
+
+    def test_path_is_solo_expense(self):
+        """PATH (NJ) charges are individual expenses."""
+        formatter = Formatter()
+        transactions = [
+            {
+                "date": "2026-04-10",
+                "description": "PATH TAPP PAYGO CP NEW JERSEY NJ",
+                "amount": 3.00,
+                "is_credit": False,
+                "source": "amex_bcp",
+                "source_display": "Amex BCP",
+                "category": "Transport",
+            }
+        ]
+        df = formatter.format_transactions(transactions)
+        assert df.iloc[0]["Other people Owe me"] == 0
+
+    def test_lirr_is_solo_expense(self):
+        formatter = Formatter()
+        transactions = [
+            {
+                "date": "2026-04-10",
+                "description": "MTA*LIRR ETIX TICKET",
+                "amount": 12.50,
+                "is_credit": False,
+                "source": "amex_bcp",
+                "source_display": "Amex BCP",
+                "category": "Transport",
+            }
+        ]
+        df = formatter.format_transactions(transactions)
+        assert df.iloc[0]["Other people Owe me"] == 0
+
+    def test_uber_is_not_auto_solo_expense(self):
+        """Non-transit Transport entries (Uber/Lyft) should not auto-zero —
+        they're often split rides or expensable separately."""
+        formatter = Formatter()
+        transactions = [
+            {
+                "date": "2026-04-10",
+                "description": "UBER TRIP HELP.UBER.COM",
+                "amount": 18.75,
+                "is_credit": False,
+                "source": "chase_sapphire",
+                "source_display": "Chase Sapphire",
+                "category": "Transport",
+            }
+        ]
+        df = formatter.format_transactions(transactions)
+        assert df.iloc[0]["Other people Owe me"] == ""

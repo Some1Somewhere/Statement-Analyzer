@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .config import OUTPUT_DIR, OUTPUT_COLUMNS, CARD_TYPES
+from .config import (
+    CARD_TYPES,
+    OUTPUT_COLUMNS,
+    OUTPUT_DIR,
+    SOLO_EXPENSE_PATTERNS,
+)
 from .splitwise_matcher import generate_transaction_id
 
 
@@ -103,13 +108,14 @@ class Formatter:
 
         # Determine "Amount I owe" and "Other people Owe me"
         if txn.get("splitwise_matched"):
-            # Matched to Splitwise: use the split amounts
+            # Matched to Splitwise: use the split amounts (user's explicit
+            # match wins over the solo-expense heuristic).
             amount_i_owe = txn.get("splitwise_owed", amount)
             other_people_owe = txn.get("splitwise_others_owe", 0)
         else:
             description = txn.get("description", "").lower()
-            is_work_expense = "subway" in description
-            other_people_owe = 0 if is_work_expense else ""
+            is_solo_expense = any(p in description for p in SOLO_EXPENSE_PATTERNS)
+            other_people_owe = 0 if is_solo_expense else ""
             amount_i_owe = amount
 
         return {
