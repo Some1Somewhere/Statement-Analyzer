@@ -1,13 +1,48 @@
 """Splitwise matcher — match card transactions to Splitwise shared expenses."""
 
+import csv
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import csv
-
 from .config import SPLITWISE_MATCHES_FILE, OUTPUT_DIR
+
+
+# Stop tokens that add no signal when comparing Splitwise descriptions
+# (free-form, written by humans) against card merchant strings.
+_DESC_STOP_TOKENS = frozenset({
+    "the", "at", "on", "in", "and", "or", "with", "for", "to", "a", "an",
+    "of", "my", "our", "your", "from", "is", "was", "by",
+})
+
+
+def _tokenize_description(text: str) -> set[str]:
+    """Lowercase, extract alphanumeric tokens, drop 1-char and stop tokens."""
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    return {t for t in tokens if len(t) > 1 and t not in _DESC_STOP_TOKENS}
+
+
+def _description_score(sw_desc: str, card_desc: str, max_score: float) -> float:
+    """
+    Score description similarity by shared-token overlap coefficient.
+
+    Uses |shared| / |smaller set| rather than Jaccard so card descriptions
+    with chaff like store locations ("BOHO KARAOKE WEST 4TH") are not
+    penalised for noise the user did not type into Splitwise.
+    """
+    if not sw_desc or not card_desc:
+        return 0.0
+    sw_tokens = _tokenize_description(sw_desc)
+    card_tokens = _tokenize_description(card_desc)
+    if not sw_tokens or not card_tokens:
+        return 0.0
+    overlap = sw_tokens & card_tokens
+    if not overlap:
+        return 0.0
+    smaller = min(len(sw_tokens), len(card_tokens))
+    return max_score * (len(overlap) / smaller)
 
 
 def generate_transaction_id(txn: dict, *, include_index: bool = True) -> str:
@@ -73,11 +108,17 @@ def rank_candidates(
     """
     Rank card transactions as candidates for matching a Splitwise expense.
 
-    Scoring:
-    - Date proximity: max 50 points, loses 5 per day (10-day window)
-    - Amount similarity: max 50 points, loses proportionally to % difference
+    Scoring (max 100):
+    - Amount similarity: max 50 points, decays at 1 per % difference.
       Compares against paid_share (what you actually paid) rather than cost
-      (total bill), since your card shows what you paid.
+      (total bill), since your card shows what you paid. Strongest single
+      signal — an exact dollar match is rare-by-coincidence.
+    - Description similarity: max 30 points (merchant-token overlap).
+      A real tiebreaker — "Boho Karaoke" → "BOHO KARAOKE WEST 4TH" should
+      beat a closer-date but unrelated transaction.
+    - Date proximity: max 20 points, loses 1 per day (20-day window).
+      Softer than the previous 10-day cliff because Splitwise expenses are
+      often logged days or weeks after the card actually posted.
 
     Args:
         splitwise_expense: A Splitwise expense dict with "cost", "date", "users".
@@ -104,21 +145,23 @@ def rank_candidates(
     except (ValueError, TypeError):
         return []
 
+    sw_desc = splitwise_expense.get("description", "")
+
     scored = []
     for txn in card_transactions:
         # Skip credits
         if txn.get("is_credit", False):
             continue
 
-        # Date score: max 50, lose 5 per day (covers 10-day window)
+        # Date score: max 20, lose 1/day (covers 20-day window)
         try:
             txn_date = datetime.strptime(txn.get("date", ""), "%Y-%m-%d").date()
         except (ValueError, TypeError):
             continue
         day_diff = abs((txn_date - sw_date).days)
-        date_score = max(0, 50 - day_diff * 5)
+        date_score = max(0, 20 - day_diff)
 
-        # Amount score: max 50, proportional to closeness
+        # Amount score: max 50, proportional to closeness (zeroes at 50% off)
         txn_amount = txn.get("amount", 0)
         if match_amount > 0:
             pct_diff = abs(txn_amount - match_amount) / match_amount
@@ -126,7 +169,10 @@ def rank_candidates(
         else:
             amount_score = 0
 
-        total_score = date_score + amount_score
+        # Description score: max 30, token-overlap coefficient
+        desc_score = _description_score(sw_desc, txn.get("description", ""), 30)
+
+        total_score = date_score + amount_score + desc_score
         if total_score > 0:
             scored.append({"txn": txn, "score": total_score})
 

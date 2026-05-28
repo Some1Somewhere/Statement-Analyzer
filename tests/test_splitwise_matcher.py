@@ -142,6 +142,70 @@ class TestRankCandidates:
         ranked = rank_candidates(sw, [])
         assert ranked == []
 
+    def test_description_match_beats_closer_date_with_no_text_overlap(self):
+        """
+        Real-world regression: a Splitwise "Beer at Boho Karaoke" logged 12
+        days after the actual charge should still rank the BOHO KARAOKE card
+        line above a closer-date but text-unrelated bar at a similar amount.
+        Before description scoring, the 12-day gap zeroed the date component
+        and an unrelated transaction won purely on date proximity.
+        """
+        sw = {
+            "id": 1,
+            "cost": "24.02",
+            "description": "Beer at Boho Karaoke",
+            "date": "2026-04-29T12:00:00Z",
+        }
+        txns = [
+            {
+                "date": "2026-05-04",
+                "description": "LE PISTOL BROOKLYN NY",
+                "amount": 23.20,
+                "is_credit": False,
+                "source": "discover",
+                "statement_file": "stmt.pdf",
+            },
+            {
+                "date": "2026-04-17",
+                "description": "BOHO KARAOKE WEST 4TH",
+                "amount": 24.02,
+                "is_credit": False,
+                "source": "robinhood",
+                "statement_file": "stmt.pdf",
+            },
+        ]
+        ranked = rank_candidates(sw, txns)
+        assert ranked[0]["txn"]["description"] == "BOHO KARAOKE WEST 4TH"
+
+    def test_description_score_ignores_stop_words_and_chaff(self):
+        """Shared content words should match even when surrounded by chaff."""
+        sw = {
+            "id": 1,
+            "cost": "50.00",
+            "description": "Dinner at the Thai place",
+            "date": "2026-01-20T20:00:00Z",
+        }
+        txns = [
+            {
+                "date": "2026-01-20",
+                "description": "THAI BISTRO NYC",
+                "amount": 50.00,
+                "is_credit": False,
+                "source": "x",
+                "statement_file": "s.pdf",
+            },
+            {
+                "date": "2026-01-20",
+                "description": "PIZZA PALACE",
+                "amount": 50.00,
+                "is_credit": False,
+                "source": "x",
+                "statement_file": "s.pdf",
+            },
+        ]
+        ranked = rank_candidates(sw, txns)
+        assert ranked[0]["txn"]["description"] == "THAI BISTRO NYC"
+
 
 class TestApplyMatches:
     """Test applying Splitwise match data to card transactions."""
