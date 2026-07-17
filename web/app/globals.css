@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* Light editorial theme — one accent hue, identity carried by text. */
+:root {
+  --background: #faf9f7;
+  --surface: #ffffff;
+  --foreground: #1a1a19;
+  --muted: #6b6a66;
+  --border: #e7e5e0;
+  --accent: #2a78d6;
+  --accent-deep: #1c5cab;
+  --accent-soft: #cde2fb;
+  --accent-faint: #eef4fc;
+  --good: #008300;
+  --warn: #b45309;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-faint: var(--accent-faint);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
