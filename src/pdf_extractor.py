@@ -62,15 +62,23 @@ class PDFExtractor:
         return result
 
     def process_card_folder(
-        self, card_type: str, folder_path: Optional[Path] = None, days: Optional[int] = None
+        self,
+        card_type: str,
+        folder_path: Optional[Path] = None,
+        days: Optional[int] = None,
+        force: bool = False,
     ) -> list[dict]:
         """
         Process all PDFs in a card type's folder.
+
+        PDFs that already have an intermediate JSON are skipped (no repeat
+        Gemini calls) unless force=True.
 
         Args:
             card_type: Type of card to process
             folder_path: Optional custom folder path (defaults to statements/{card_type})
             days: Only process files modified in the last N days (None = all files)
+            force: Re-extract even if an intermediate JSON already exists
 
         Returns:
             List of extraction results
@@ -92,8 +100,21 @@ class PDFExtractor:
             if original_count > len(pdf_files):
                 print(f"  Filtered to {len(pdf_files)}/{original_count} files modified in last {days} days")
 
+        # Skip already-extracted files unless forced
+        if not force:
+            already_done = [
+                f for f in pdf_files
+                if (INTERMEDIATE_DIR / f"{card_type}_{f.stem}.json").exists()
+            ]
+            if already_done:
+                pdf_files = [f for f in pdf_files if f not in already_done]
+                print(
+                    f"  Skipping {len(already_done)} already-extracted file(s) "
+                    f"in {card_type} (use --force to re-extract)"
+                )
+
         if not pdf_files:
-            print(f"No PDF files found in: {folder_path}")
+            print(f"No new PDF files to process in: {folder_path}")
             return []
 
         print(f"\nProcessing {len(pdf_files)} PDF(s) from {CARD_TYPES.get(card_type, card_type)}...")
@@ -108,12 +129,15 @@ class PDFExtractor:
 
         return results
 
-    def process_all_statements(self, days: Optional[int] = None) -> list[dict]:
+    def process_all_statements(
+        self, days: Optional[int] = None, force: bool = False
+    ) -> list[dict]:
         """
         Process all PDF statements from all card folders.
 
         Args:
             days: Only process files modified in the last N days (None = all files)
+            force: Re-extract files that already have intermediate JSON
 
         Returns:
             List of all extraction results
@@ -124,7 +148,7 @@ class PDFExtractor:
             print(f"Processing files modified in the last {days} days...")
 
         for card_type in CARD_TYPES.keys():
-            results = self.process_card_folder(card_type, days=days)
+            results = self.process_card_folder(card_type, days=days, force=force)
             all_results.extend(results)
 
         print(f"\nTotal: Processed {len(all_results)} statement(s)")

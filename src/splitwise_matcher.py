@@ -3,6 +3,7 @@
 import csv
 import json
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -180,6 +181,72 @@ def rank_candidates(
     return scored[:top_n]
 
 
+def _share_amounts(sw_exp: dict, my_user_id: Optional[int]) -> tuple:
+    """Return (owed_share, others_owe) for my_user_id in a Splitwise expense."""
+    for user_entry in sw_exp.get("users", []):
+        if user_entry.get("user_id") == my_user_id:
+            paid = float(user_entry.get("paid_share", "0"))
+            owed = float(user_entry.get("owed_share", "0"))
+            return owed, round(paid - owed, 2)
+    return None, None
+
+
+def _dedupe_matches(matches: list[dict]) -> list[dict]:
+    """Drop exact duplicate (splitwise_id, card_transaction_id) pairs."""
+    seen = set()
+    unique = []
+    for m in matches:
+        pair = (m["splitwise_id"], m["card_transaction_id"])
+        if pair not in seen:
+            seen.add(pair)
+            unique.append(m)
+    return unique
+
+
+def _match_amounts(match: dict, sw_by_id: dict, my_user_id: int) -> tuple:
+    """
+    Resolve (owed_share, others_owe) for a match.
+
+    Prefers amounts stored on the match record itself (self-contained, survives
+    cache refetches); falls back to looking up the expense in the cache for
+    legacy matches saved before amounts were stored.
+    """
+    if "owed_share" in match and "others_owe" in match:
+        return float(match["owed_share"]), float(match["others_owe"])
+    sw_exp = sw_by_id.get(match["splitwise_id"])
+    if sw_exp is None:
+        return None, None
+    return _share_amounts(sw_exp, my_user_id)
+
+
+def backfill_match_amounts(
+    matches: list[dict], splitwise_expenses: list[dict], my_user_id: int
+) -> int:
+    """
+    Store owed_share/others_owe on legacy match records that lack them,
+    using expenses currently in the cache. Mutates matches in place.
+
+    Returns the number of records updated.
+    """
+    sw_by_id = {exp["id"]: exp for exp in splitwise_expenses}
+    updated = 0
+    for match in matches:
+        if match["card_transaction_id"] == "__not_on_card__":
+            continue
+        if "owed_share" in match and "others_owe" in match:
+            continue
+        sw_exp = sw_by_id.get(match["splitwise_id"])
+        if sw_exp is None:
+            continue
+        owed, others = _share_amounts(sw_exp, my_user_id)
+        if owed is None:
+            continue
+        match["owed_share"] = owed
+        match["others_owe"] = others
+        updated += 1
+    return updated
+
+
 def apply_matches(
     transactions: list[dict],
     matches: list[dict],
@@ -194,6 +261,13 @@ def apply_matches(
     - splitwise_owed: my owed_share
     - splitwise_others_owe: paid_share - owed_share
 
+    When one Splitwise expense is matched to N card transactions (a single
+    Splitwise entry covering several charges), both amounts are divided evenly
+    across the N rows so the total across rows equals the expense.
+
+    Amounts come from the match record itself when stored there; the cache
+    lookup is only a fallback for legacy matches.
+
     Args:
         transactions: Card transactions (will not be mutated).
         matches: List of match dicts with splitwise_id and card_transaction_id.
@@ -203,54 +277,46 @@ def apply_matches(
     Returns:
         New list of transactions with match data attached where applicable.
     """
-    # Build lookup: card_transaction_id -> splitwise_id
-    card_to_sw = {}
-    for match in matches:
-        card_to_sw[match["card_transaction_id"]] = match["splitwise_id"]
+    unique_matches = _dedupe_matches(matches)
 
-    # Build lookup: splitwise_id -> expense
+    # card_transaction_id -> match record, and per-expense match counts for
+    # dividing amounts across multi-row matches.
+    card_to_match = {
+        m["card_transaction_id"]: m
+        for m in unique_matches
+        if m["card_transaction_id"] != "__not_on_card__"
+    }
+    group_size = Counter(m["splitwise_id"] for m in card_to_match.values())
+
     sw_by_id = {exp["id"]: exp for exp in splitwise_expenses}
 
     result = []
     for txn in transactions:
         # Try the current id, then the legacy id (no file_index) so matches
         # saved before the tiebreaker was added still resolve.
-        sw_id = card_to_sw.get(generate_transaction_id(txn))
-        if sw_id is None:
-            sw_id = card_to_sw.get(
+        match = card_to_match.get(generate_transaction_id(txn))
+        if match is None:
+            match = card_to_match.get(
                 generate_transaction_id(txn, include_index=False)
             )
         txn_copy = {**txn}
 
-        if sw_id is not None:
-            sw_exp = sw_by_id.get(sw_id)
-
-            if sw_exp is None:
-                # Stale match: the referenced expense is no longer in the cache.
+        if match is not None:
+            owed, others = _match_amounts(match, sw_by_id, my_user_id)
+            if owed is None:
                 print(
-                    f"Warning: match references Splitwise expense {sw_id} "
-                    f"not in the current cache; leaving '{txn.get('description', '')}' "
-                    f"unsplit."
+                    f"Warning: no amounts for Splitwise expense "
+                    f"{match['splitwise_id']} (not in cache, none stored); "
+                    f"leaving '{txn.get('description', '')}' unsplit. "
+                    f"Re-run fetch-splitwise with a wider --days to backfill."
                 )
             else:
-                # Find my share
-                for user_entry in sw_exp.get("users", []):
-                    if user_entry.get("user_id") == my_user_id:
-                        paid = float(user_entry.get("paid_share", "0"))
-                        owed = float(user_entry.get("owed_share", "0"))
-                        txn_copy["splitwise_matched"] = True
-                        txn_copy["splitwise_owed"] = owed
-                        txn_copy["splitwise_others_owe"] = round(paid - owed, 2)
-                        break
-                else:
-                    # my_user_id is not in this expense (e.g. removed from the
-                    # group). Without a share we cannot split, so warn instead of
-                    # silently exporting the full card amount as if unmatched.
-                    print(
-                        f"Warning: Splitwise expense {sw_id} has no entry for "
-                        f"user {my_user_id}; leaving '{txn.get('description', '')}' "
-                        f"unsplit."
-                    )
+                # ponytail: even split rounded to cents; up to n-1 cents of
+                # drift per group, proportional split if it ever matters.
+                n = group_size[match["splitwise_id"]] or 1
+                txn_copy["splitwise_matched"] = True
+                txn_copy["splitwise_owed"] = round(owed / n, 2)
+                txn_copy["splitwise_others_owe"] = round(others / n, 2)
 
         result.append(txn_copy)
 
@@ -349,7 +415,7 @@ def run_interactive_matching(
         print("  n. Not on card (Venmo/cash)")
         print("  q. Quit matching")
 
-        choice = input("  Pick: ").strip().lower()
+        choice = input("  Pick (comma-separate to match multiple rows): ").strip().lower()
 
         if choice == "q":
             break
@@ -366,27 +432,37 @@ def run_interactive_matching(
             continue  # Skip, will ask again next time
         else:
             try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(candidates):
-                    matched_txn = candidates[idx]["txn"]
-                    card_id = generate_transaction_id(matched_txn)
-                    matches.append(
-                        {
-                            "splitwise_id": sw_exp["id"],
-                            "card_transaction_id": card_id,
-                            "matched_at": datetime.now().isoformat(),
-                        }
-                    )
-                    # Remove from available pool
-                    available_cards = [
-                        t for t in available_cards
-                        if generate_transaction_id(t) != card_id
-                    ]
-                    print("  Matched!")
-                else:
-                    print("  Invalid choice, skipping.")
+                idxs = sorted({int(p) - 1 for p in choice.split(",")})
             except ValueError:
                 print("  Invalid choice, skipping.")
+                continue
+            if not all(0 <= idx < len(candidates) for idx in idxs):
+                print("  Invalid choice, skipping.")
+                continue
+
+            # Store split amounts on the match so it survives cache refetches.
+            owed, others = _share_amounts(sw_exp, my_user_id)
+            matched_card_ids_now = []
+            for idx in idxs:
+                matched_txn = candidates[idx]["txn"]
+                card_id = generate_transaction_id(matched_txn)
+                record = {
+                    "splitwise_id": sw_exp["id"],
+                    "card_transaction_id": card_id,
+                    "matched_at": datetime.now().isoformat(),
+                }
+                if owed is not None:
+                    record["owed_share"] = owed
+                    record["others_owe"] = others
+                matches.append(record)
+                matched_card_ids_now.append(card_id)
+
+            # Remove from available pool
+            available_cards = [
+                t for t in available_cards
+                if generate_transaction_id(t) not in matched_card_ids_now
+            ]
+            print(f"  Matched {len(idxs)} row(s)!")
 
     save_matches(matches, match_file)
     new_count = len(matches) - initial_count

@@ -36,3 +36,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Google service account (web UI + Sheet push)
+data/service-account.json

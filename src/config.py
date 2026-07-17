@@ -24,6 +24,19 @@ OUTPUT_DIR = BASE_DIR / "output"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 CARDS_FILE = DATA_DIR / "cards.json"
 
+# Google Sheets (the manually-curated source of truth). Optional — export
+# skips the Sheet push when GOOGLE_SHEET_ID is unset.
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+GOOGLE_SERVICE_ACCOUNT_FILE = Path(
+    os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(Path(__file__).parent.parent / "data" / "service-account.json"))
+)
+# Tab that holds the reconciled expense rows
+SHEET_TAB = os.getenv("SHEET_TAB", "Main")
+
+# Default lookback window for fetch-splitwise. Matches store their own split
+# amounts, so a short window never un-splits old matches.
+SPLITWISE_DEFAULT_DAYS = 60
+
 SPLITWISE_API_KEY = os.getenv("SPLITWISE_API_KEY")
 SPLITWISE_BASE_URL = "https://secure.splitwise.com/api/v3.0"
 SPLITWISE_MATCHES_FILE = DATA_DIR / "splitwise_matches.json"

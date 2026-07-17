@@ -13,17 +13,21 @@ The typical monthly workflow for processing new statements:
 ```bash
 # 1. Place new PDF statements into statements/{card_type}/ folders
 
-# 2. Extract card transactions from PDFs (cached, won't re-process existing)
-python -m src.main extract --days 30
+# 2. Extract card transactions from PDFs (skips already-extracted files;
+#    --force to redo, --clear to wipe the cache)
+python -m src.main extract
 
-# 3. Fetch Splitwise expenses for the same period
-python -m src.main fetch-splitwise --days 30
+# 3. Fetch Splitwise expenses (default: last 60 days; --days to widen)
+python -m src.main fetch-splitwise
 
-# 4. Interactively match card charges to Splitwise shared expenses
-#    (e.g., "$80 Whole Foods on Amex" = "Whole Foods groceries split on Splitwise")
+# 4. Interactively match card charges to Splitwise shared expenses.
+#    Comma-separate picks (e.g. "1,3") to match one Splitwise expense to
+#    multiple card rows — amounts divide evenly across them.
 python -m src.main match-splitwise
 
-# 5. Export — merges card + Splitwise data, categorizes, writes CSV
+# 5. Export — merges card + Splitwise data, categorizes, writes CSV, and
+#    appends new rows to the Google Sheet (append-only, dedup by matching).
+#    --dry-run previews the Sheet append; --since YYYY-MM-DD floors it.
 python -m src.main export --summary
 ```
 
@@ -35,6 +39,10 @@ What `export` does behind the scenes:
 - Writes to `output/expenses.csv`
 
 After export, review `Other people Owe me` column: blank = not yet determined (you fill in manually), 0 = solo / individual expense (auto-set for public transit — MTA, NYCT, PATH, LIRR, Metro-North — where nobody else owes a share), a dollar amount = Splitwise-matched split.
+
+Google Sheet push (when `GOOGLE_SHEET_ID` is set in `.env`): appends only rows not already in the `Main` tab (`SHEET_TAB` to override). Dedup is count-aware on (date, item, card) with a (date, card, amount) fallback, so rows the user edited in the Sheet (e.g. `???` flags) are not re-appended. Existing Sheet rows are never modified. The Sheet must be shared with the service account email in `data/service-account.json`.
+
+Match records in `data/splitwise_matches.json` store their own `owed_share`/`others_owe`, so a narrow `fetch-splitwise` window never un-splits old matches. `fetch-splitwise` backfills amounts into any legacy match it can see in the fresh cache. One Splitwise expense matched to N card rows divides both amounts evenly across the rows. Zero-amount transactions (e.g. "$0.00 INTEREST CHARGED") are dropped at export.
 
 ## Commands
 

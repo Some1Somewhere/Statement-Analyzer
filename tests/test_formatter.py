@@ -134,3 +134,17 @@ class TestSoloExpenseTransitRule:
         ]
         df = formatter.format_transactions(transactions)
         assert df.iloc[0]["Other people Owe me"] == ""
+
+
+class TestZeroAmountFilter:
+    def test_zero_amount_rows_are_dropped(self):
+        from src.formatter import Formatter
+        txns = [
+            {"date": "2026-05-21", "description": "INTEREST CHARGED ON PURCHASES",
+             "amount": 0.0, "is_credit": False, "source": "bofa_custom_cash"},
+            {"date": "2026-05-21", "description": "REAL CHARGE",
+             "amount": 12.5, "is_credit": False, "source": "bofa_custom_cash"},
+        ]
+        df = Formatter().format_transactions(txns)
+        assert len(df) == 1
+        assert df.iloc[0]["Item"] == "REAL CHARGE"

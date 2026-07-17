@@ -40,6 +40,10 @@ class Formatter:
             if txn.get("is_credit", False):
                 continue
 
+            # Skip zero-amount rows ("$0.00 INTEREST CHARGED" statement noise)
+            if not txn.get("amount"):
+                continue
+
             formatted_rows.append(self._format_single_transaction(txn))
             card_ids.append(generate_transaction_id(txn))
 

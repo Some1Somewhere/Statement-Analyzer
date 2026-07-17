@@ -18,7 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import STATEMENTS_DIR, OUTPUT_DIR, CARD_TYPES
+from .config import STATEMENTS_DIR, OUTPUT_DIR, CARD_TYPES, SPLITWISE_DEFAULT_DAYS
 from .pdf_extractor import PDFExtractor
 from .categorizer import Categorizer
 from .formatter import Formatter
@@ -41,10 +41,10 @@ def cmd_extract(args):
             return 1
 
         input_path = Path(args.input) if args.input else None
-        extractor.process_card_folder(args.card, input_path, days=days)
+        extractor.process_card_folder(args.card, input_path, days=days, force=args.force)
     else:
         # Process all card types
-        extractor.process_all_statements(days=days)
+        extractor.process_all_statements(days=days, force=args.force)
 
     return 0
 
@@ -100,12 +100,12 @@ def cmd_export(args):
         # Apply match data to card transactions
         matches = load_matches()
         i_paid_shared = cached.get("i_paid_shared", [])
-        if matches and i_paid_shared:
+        if matches:
             transactions = apply_matches(
                 transactions, matches, i_paid_shared, my_user_id
             )
-            real_matches = [m for m in matches if m["card_transaction_id"] != "__not_on_card__"]
-            print(f"Applied {len(real_matches)} Splitwise match(es)")
+            applied = sum(1 for t in transactions if t.get("splitwise_matched"))
+            print(f"Applied Splitwise splits to {applied} card transaction(s)")
 
         # Export unmatched Splitwise CSV
         if i_paid_shared:
@@ -129,6 +129,46 @@ def cmd_export(args):
         formatter.export_to_excel(categorized, output_path)
     else:
         formatter.export_to_csv(categorized, output_path)
+
+    # Push to Google Sheet (the manually-curated source of truth), if
+    # configured. Additive only — dedup by matching, existing rows untouched.
+    # Never fails the export — the CSV is already written.
+    from .config import GOOGLE_SHEET_ID
+    if GOOGLE_SHEET_ID and args.format != "xlsx":
+        try:
+            import csv as csv_mod
+            from .sheets_client import SheetsClient
+
+            sheets = SheetsClient()
+            rows = formatter.format_transactions(categorized).to_dict("records")
+            if args.since:
+                rows = [r for r in rows if str(r.get("Date", "")) >= args.since]
+            if args.dry_run:
+                new_rows = sheets.find_new_expenses(rows)
+                print(f"Sheet (dry run): would append {len(new_rows)} new row(s)")
+                for r in new_rows:
+                    print(f"  + {r['Date']} | {r['Item']} | {r['Payment Type']} | {r['Amount Charged']}")
+                fills = sheets.find_split_fills(rows)
+                fill_rows = sorted({rn for rn, _, _ in fills})
+                print(f"Sheet (dry run): would fill splits on {len(fill_rows)} existing row(s)")
+                for row_num, col, value in fills:
+                    if col == "Other people Owe me":
+                        print(f"  ~ row {row_num}: Other people Owe me -> {value}")
+            else:
+                added = sheets.append_expenses(rows)
+                print(f"Sheet: appended {added} new expense row(s)")
+                filled = sheets.fill_blank_splits(rows)
+                if filled:
+                    print(f"Sheet: filled splits on {filled} existing row(s)")
+
+                unmatched_path = OUTPUT_DIR / "unmatched_splitwise.csv"
+                if unmatched_path.exists():
+                    with open(unmatched_path) as f:
+                        unmatched_rows = list(csv_mod.DictReader(f))
+                    sheets.replace_unmatched(unmatched_rows)
+                    print(f"Sheet: refreshed {len(unmatched_rows)} unmatched Splitwise row(s)")
+        except Exception as e:
+            print(f"Sheet push failed (CSV still written): {e!r}")
 
     # Print summary
     if args.summary:
@@ -213,7 +253,7 @@ def cmd_run(args):
         # Apply matches
         matches = load_matches()
         i_paid_shared = cached.get("i_paid_shared", [])
-        if matches and i_paid_shared:
+        if matches:
             transactions = apply_matches(
                 transactions, matches, i_paid_shared, my_user_id
             )
@@ -260,16 +300,26 @@ def cmd_add_keyword(args):
 def cmd_fetch_splitwise(args):
     """Fetch expenses from Splitwise API."""
     from .splitwise_client import SplitwiseClient
+    from .splitwise_matcher import load_matches, save_matches, backfill_match_amounts
 
     client = SplitwiseClient()
 
-    dated_after = None
-    if args.days:
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(days=args.days)
-        dated_after = cutoff.isoformat() + "Z"
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
+    dated_after = cutoff.isoformat()
 
-    client.fetch_and_cache(dated_after=dated_after)
+    cached = client.fetch_and_cache(dated_after=dated_after)
+
+    # Enrich legacy matches with split amounts from the fresh cache, so they
+    # keep working even after the cache window moves past them.
+    matches = load_matches()
+    if matches:
+        updated = backfill_match_amounts(
+            matches, cached.get("i_paid_shared", []), cached.get("user_id")
+        )
+        if updated:
+            save_matches(matches)
+            print(f"Backfilled split amounts into {updated} existing match(es)")
     return 0
 
 
@@ -375,13 +425,19 @@ def cmd_manual_match(args):
         print("Cancelled.")
         return 0
 
-    # Save the match
+    # Save the match, with split amounts stored so it survives cache refetches.
     matches = load_matches()
-    matches.append({
+    record = {
         "splitwise_id": sw_id,
         "card_transaction_id": card_id,
         "matched_at": dt.now().isoformat(),
-    })
+    }
+    try:
+        record["owed_share"] = float(sw_row["Your Share"])
+        record["others_owe"] = float(sw_row["Others Owe You"])
+    except (KeyError, ValueError):
+        pass  # legacy CSV without amounts — apply will fall back to the cache
+    matches.append(record)
     save_matches(matches)
     print("Matched! Run 'export' to update CSVs.")
     return 0
@@ -407,6 +463,10 @@ def main():
     extract_parser.add_argument(
         "--clear", action="store_true", help="Clear old intermediate data before extracting"
     )
+    extract_parser.add_argument(
+        "--force", action="store_true",
+        help="Re-extract PDFs that already have intermediate data"
+    )
 
     # Categorize command
     cat_parser = subparsers.add_parser("categorize", help="Categorize transactions")
@@ -422,6 +482,15 @@ def main():
     )
     export_parser.add_argument(
         "--summary", "-s", action="store_true", help="Print summary after export"
+    )
+    export_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show which rows would be appended to the Google Sheet without writing"
+    )
+    export_parser.add_argument(
+        "--since", metavar="YYYY-MM-DD",
+        help="Only consider rows on/after this date for the Sheet push "
+             "(CSV always contains everything)"
     )
 
     # Run command (full pipeline)
@@ -442,7 +511,8 @@ def main():
         "fetch-splitwise", help="Fetch expenses from Splitwise"
     )
     sw_parser.add_argument(
-        "--days", "-d", type=int, help="Only fetch expenses from the last N days"
+        "--days", "-d", type=int, default=SPLITWISE_DEFAULT_DAYS,
+        help=f"Fetch expenses from the last N days (default: {SPLITWISE_DEFAULT_DAYS})"
     )
 
     # Match Splitwise command

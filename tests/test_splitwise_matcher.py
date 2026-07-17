@@ -291,3 +291,106 @@ class TestApplyMatches:
         ]
         result = apply_matches(transactions, [], [], my_user_id=1)
         assert result[0].get("splitwise_matched") is not True
+
+
+class TestSelfContainedMatches:
+    """Matches carrying their own amounts must not depend on the cache."""
+
+    def _txn(self, desc="DINNER", amount=60.0, idx=None):
+        txn = {
+            "date": "2026-01-17",
+            "description": desc,
+            "amount": amount,
+            "is_credit": False,
+            "source": "amex_bcp",
+            "statement_file": "stmt.pdf",
+        }
+        if idx is not None:
+            txn["file_index"] = idx
+        return txn
+
+    def test_stored_amounts_apply_with_empty_cache(self):
+        txn = self._txn()
+        matches = [
+            {
+                "splitwise_id": 1001,
+                "card_transaction_id": generate_transaction_id(txn),
+                "owed_share": 20.0,
+                "others_owe": 40.0,
+            }
+        ]
+        result = apply_matches([txn], matches, [], my_user_id=1)
+        assert result[0]["splitwise_matched"] is True
+        assert result[0]["splitwise_owed"] == 20.0
+        assert result[0]["splitwise_others_owe"] == 40.0
+
+    def test_stored_amounts_win_over_cache(self):
+        txn = self._txn()
+        matches = [
+            {
+                "splitwise_id": 1001,
+                "card_transaction_id": generate_transaction_id(txn),
+                "owed_share": 20.0,
+                "others_owe": 40.0,
+            }
+        ]
+        sw_expenses = [
+            {
+                "id": 1001,
+                "users": [{"user_id": 1, "paid_share": "60.0", "owed_share": "60.0"}],
+            }
+        ]
+        result = apply_matches([txn], matches, sw_expenses, my_user_id=1)
+        assert result[0]["splitwise_owed"] == 20.0
+
+    def test_multi_row_match_divides_amounts(self):
+        """One Splitwise expense over N card rows splits amounts evenly."""
+        txns = [self._txn(idx=0), self._txn(idx=1), self._txn(idx=2)]
+        matches = [
+            {
+                "splitwise_id": 1001,
+                "card_transaction_id": generate_transaction_id(t),
+                "owed_share": 30.0,
+                "others_owe": 90.0,
+            }
+            for t in txns
+        ]
+        result = apply_matches(txns, matches, [], my_user_id=1)
+        for row in result:
+            assert row["splitwise_matched"] is True
+            assert row["splitwise_owed"] == 10.0
+            assert row["splitwise_others_owe"] == 30.0
+
+    def test_exact_duplicate_match_records_do_not_inflate_division(self):
+        txn = self._txn()
+        record = {
+            "splitwise_id": 1001,
+            "card_transaction_id": generate_transaction_id(txn),
+            "owed_share": 20.0,
+            "others_owe": 40.0,
+        }
+        result = apply_matches([txn], [record, dict(record)], [], my_user_id=1)
+        assert result[0]["splitwise_owed"] == 20.0
+        assert result[0]["splitwise_others_owe"] == 40.0
+
+    def test_backfill_adds_amounts_to_legacy_matches(self):
+        from src.splitwise_matcher import backfill_match_amounts
+
+        matches = [
+            {"splitwise_id": 1001, "card_transaction_id": "some|id"},
+            {"splitwise_id": 9999, "card_transaction_id": "__not_on_card__"},
+            {"splitwise_id": 2002, "card_transaction_id": "other|id",
+             "owed_share": 5.0, "others_owe": 5.0},
+        ]
+        sw_expenses = [
+            {
+                "id": 1001,
+                "users": [{"user_id": 1, "paid_share": "60.0", "owed_share": "20.0"}],
+            }
+        ]
+        updated = backfill_match_amounts(matches, sw_expenses, my_user_id=1)
+        assert updated == 1
+        assert matches[0]["owed_share"] == 20.0
+        assert matches[0]["others_owe"] == 40.0
+        # Already-enriched match untouched
+        assert matches[2]["owed_share"] == 5.0
